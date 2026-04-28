@@ -35,6 +35,7 @@
     "url": "https://github.com/XanderLuciano/zebra-label-printer"
   },
   "devDependencies": {
+    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.0.0",
     "tsx": "^4.0.0",
     "typescript": "^5.5.0",
@@ -44,6 +45,7 @@
     "node": ">=18"
   },
   "dependencies": {
+    "better-sqlite3": "^12.9.0",
     "zod": "^4.3.6"
   }
 }

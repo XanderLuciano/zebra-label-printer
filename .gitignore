@@ -3,3 +3,8 @@ dist/
 *.log
 .env
 *.tsbuildinfo
+data/
+# Nuxt
+.nuxt/
+.output/
+.nitro/
