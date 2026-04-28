@@ -2,6 +2,9 @@
 /**
  * CLI for the Zebra Label Printer library.
  *
+ * Install globally: npm install -g zebra-label-printer
+ * Usage: zebra-label <command>
+ *
  * Commands:
  *   discover          List available printers
  *   print-test        Print a test label

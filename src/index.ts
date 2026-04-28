@@ -28,7 +28,6 @@
 // Core classes
 export { Printer } from './printer';
 export { ZPLBuilder } from './zpl';
-export { WebhookServer, startServer } from './webhook';
 
 // Discovery
 export { discoverPrinters, findFirstZebra, getPrinter } from './discovery';
@@ -54,6 +53,9 @@ export {
   itemLabel,
   customLabel,
 } from './label';
+
+// Webhook server (modular: see src/server/ for internals)
+export { WebhookServer, startServer } from './server/index';
 
 // Validation schemas
 export {
