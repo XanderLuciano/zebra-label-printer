@@ -13,12 +13,12 @@ export const OPENAPI_SPEC = {
       'Network webhook API for the Zebra GK420d label printer. ' +
       'Print text labels, barcodes (1D + 2D/QR), raw ZPL, or compose ' +
       'custom labels from typed elements.',
-    license: { name: 'MIT' },
+    license: { name: 'MIT' }
   },
   servers: [
     { url: 'http://localhost:3420', description: 'Local server' },
     { url: 'http://{host}:3420', description: 'Network server',
-      variables: { host: { default: 'nuc.local' } } },
+      variables: { host: { default: 'nuc.local' } } }
   ],
   paths: {
     '/api/health': {
@@ -35,14 +35,14 @@ export const OPENAPI_SPEC = {
                   type: 'object',
                   properties: {
                     status: { type: 'string', example: 'ok' },
-                    printer: { type: 'string', example: 'ZTC-GK420d' },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
+                    printer: { type: 'string', example: 'ZTC-GK420d' }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     },
     '/api/printers': {
       get: {
@@ -68,17 +68,17 @@ export const OPENAPI_SPEC = {
                           status: { type: 'string', enum: ['idle', 'printing', 'unavailable', 'unknown'] },
                           accepting: { type: 'boolean' },
                           serial: { type: 'string' },
-                          isZebra: { type: 'boolean' },
-                        },
-                      },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
-      },
+                          isZebra: { type: 'boolean' }
+                        }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
     },
     '/api/print/text': {
       post: {
@@ -99,35 +99,35 @@ export const OPENAPI_SPEC = {
                     minItems: 1,
                     maxItems: 20,
                     description: 'Lines of text to print',
-                    example: ['Living Room', 'Box #3'],
+                    example: ['Living Room', 'Box #3']
                   },
                   copies: {
                     type: 'integer',
                     minimum: 1,
                     maximum: 10,
-                    default: 1,
-                  },
-                },
+                    default: 1
+                  }
+                }
               },
               examples: {
                 simple: {
                   summary: 'Simple label',
-                  value: { lines: ['Kitchen Utensils'] },
+                  value: { lines: ['Kitchen Utensils'] }
                 },
                 multiLine: {
                   summary: 'Multi-line label',
-                  value: { lines: ['Living Room', 'Box #3', 'Misc Cables'] },
-                },
-              },
-            },
-          },
+                  value: { lines: ['Living Room', 'Box #3', 'Misc Cables'] }
+                }
+              }
+            }
+          }
         },
         responses: {
           '200': { $ref: '#/components/responses/PrintSuccess' },
           '400': { $ref: '#/components/responses/ValidationError' },
-          '503': { $ref: '#/components/responses/PrinterUnavailable' },
-        },
-      },
+          '503': { $ref: '#/components/responses/PrinterUnavailable' }
+        }
+      }
     },
     '/api/print/barcode': {
       post: {
@@ -145,41 +145,41 @@ export const OPENAPI_SPEC = {
                   data: {
                     type: 'string',
                     description: 'Barcode data to encode',
-                    example: 'INV-42069',
+                    example: 'INV-42069'
                   },
                   type: {
                     type: 'string',
                     enum: ['CODE128', 'CODE39', 'CODE93', 'EAN8', 'EAN13',
-                           'UPCA', 'UPCE', 'CODABAR', 'PDF417', 'QRCODE', 'DATAMATRIX'],
-                    default: 'CODE128',
+                      'UPCA', 'UPCE', 'CODABAR', 'PDF417', 'QRCODE', 'DATAMATRIX'],
+                    default: 'CODE128'
                   },
                   text: {
                     type: 'string',
-                    description: 'Optional human-readable text below the barcode',
+                    description: 'Optional human-readable text below the barcode'
                   },
                   height: {
                     type: 'integer',
                     minimum: 10,
                     maximum: 1000,
-                    description: 'Barcode height in dots',
-                  },
-                },
+                    description: 'Barcode height in dots'
+                  }
+                }
               },
               examples: {
                 code128: {
                   summary: 'CODE128 barcode',
-                  value: { data: 'INV-42069', text: 'Inventory Tag' },
-                },
-              },
-            },
-          },
+                  value: { data: 'INV-42069', text: 'Inventory Tag' }
+                }
+              }
+            }
+          }
         },
         responses: {
           '200': { $ref: '#/components/responses/PrintSuccess' },
           '400': { $ref: '#/components/responses/ValidationError' },
-          '503': { $ref: '#/components/responses/PrinterUnavailable' },
-        },
-      },
+          '503': { $ref: '#/components/responses/PrinterUnavailable' }
+        }
+      }
     },
     '/api/print/qr': {
       post: {
@@ -197,30 +197,30 @@ export const OPENAPI_SPEC = {
                   data: {
                     type: 'string',
                     description: 'Data to encode in the QR code',
-                    example: 'https://example.com',
+                    example: 'https://example.com'
                   },
                   text: {
                     type: 'string',
-                    description: 'Optional label text below the QR code',
+                    description: 'Optional label text below the QR code'
                   },
                   magnification: {
                     type: 'integer',
                     minimum: 1,
                     maximum: 10,
                     default: 5,
-                    description: 'QR code size multiplier',
-                  },
-                },
-              },
-            },
-          },
+                    description: 'QR code size multiplier'
+                  }
+                }
+              }
+            }
+          }
         },
         responses: {
           '200': { $ref: '#/components/responses/PrintSuccess' },
           '400': { $ref: '#/components/responses/ValidationError' },
-          '503': { $ref: '#/components/responses/PrinterUnavailable' },
-        },
-      },
+          '503': { $ref: '#/components/responses/PrinterUnavailable' }
+        }
+      }
     },
     '/api/print/zpl': {
       post: {
@@ -234,23 +234,23 @@ export const OPENAPI_SPEC = {
           required: true,
           content: {
             'text/plain': {
-              schema: { type: 'string', example: '^XA\n^FO50,50^A0N,40,40^FDHello^FS\n^XZ' },
+              schema: { type: 'string', example: '^XA\n^FO50,50^A0N,40,40^FDHello^FS\n^XZ' }
             },
             'application/json': {
               schema: {
                 type: 'object',
                 required: ['zpl'],
-                properties: { zpl: { type: 'string' } },
-              },
-            },
-          },
+                properties: { zpl: { type: 'string' } }
+              }
+            }
+          }
         },
         responses: {
           '200': { $ref: '#/components/responses/PrintSuccess' },
           '400': { $ref: '#/components/responses/ValidationError' },
-          '503': { $ref: '#/components/responses/PrinterUnavailable' },
-        },
-      },
+          '503': { $ref: '#/components/responses/PrinterUnavailable' }
+        }
+      }
     },
     '/api/print/label': {
       post: {
@@ -290,10 +290,10 @@ export const OPENAPI_SPEC = {
                                 height: { type: 'integer' },
                                 width: { type: 'integer' },
                                 rotation: { type: 'string', enum: ['N', 'R', 'I', 'B'] },
-                                reverse: { type: 'boolean' },
-                              },
-                            },
-                          },
+                                reverse: { type: 'boolean' }
+                              }
+                            }
+                          }
                         },
                         {
                           type: 'object',
@@ -311,10 +311,10 @@ export const OPENAPI_SPEC = {
                                 type: { type: 'string', enum: ['CODE128', 'CODE39', 'CODE93', 'EAN8', 'EAN13', 'UPCA', 'UPCE', 'CODABAR', 'PDF417', 'QRCODE', 'DATAMATRIX'] },
                                 height: { type: 'integer' },
                                 humanReadable: { type: 'boolean' },
-                                rotation: { type: 'string', enum: ['N', 'R', 'I', 'B'] },
-                              },
-                            },
-                          },
+                                rotation: { type: 'string', enum: ['N', 'R', 'I', 'B'] }
+                              }
+                            }
+                          }
                         },
                         {
                           type: 'object',
@@ -330,10 +330,10 @@ export const OPENAPI_SPEC = {
                                 x: { type: 'integer' },
                                 y: { type: 'integer' },
                                 magnification: { type: 'integer', minimum: 1, maximum: 10 },
-                                errorCorrection: { type: 'string', enum: ['L', 'M', 'Q', 'H'] },
-                              },
-                            },
-                          },
+                                errorCorrection: { type: 'string', enum: ['L', 'M', 'Q', 'H'] }
+                              }
+                            }
+                          }
                         },
                         {
                           type: 'object',
@@ -341,14 +341,14 @@ export const OPENAPI_SPEC = {
                           required: ['type', 'zpl'],
                           properties: {
                             type: { const: 'raw' },
-                            zpl: { type: 'string' },
-                          },
-                        },
-                      ],
-                    },
+                            zpl: { type: 'string' }
+                          }
+                        }
+                      ]
+                    }
                   },
-                  copies: { type: 'integer', minimum: 1, maximum: 10 },
-                },
+                  copies: { type: 'integer', minimum: 1, maximum: 10 }
+                }
               },
               examples: {
                 simple: {
@@ -356,21 +356,21 @@ export const OPENAPI_SPEC = {
                   value: {
                     elements: [
                       { type: 'text', content: 'Asset Tag', options: { x: 50, y: 30, height: 40 } },
-                      { type: 'barcode', content: 'ASSET-001', options: { x: 50, y: 90, type: 'CODE128', height: 80 } },
-                    ],
-                  },
-                },
-              },
-            },
-          },
+                      { type: 'barcode', content: 'ASSET-001', options: { x: 50, y: 90, type: 'CODE128', height: 80 } }
+                    ]
+                  }
+                }
+              }
+            }
+          }
         },
         responses: {
           '200': { $ref: '#/components/responses/PrintSuccess' },
           '400': { $ref: '#/components/responses/ValidationError' },
-          '503': { $ref: '#/components/responses/PrinterUnavailable' },
-        },
-      },
-    },
+          '503': { $ref: '#/components/responses/PrinterUnavailable' }
+        }
+      }
+    }
   },
   components: {
     responses: {
@@ -382,11 +382,11 @@ export const OPENAPI_SPEC = {
               type: 'object',
               properties: {
                 success: { type: 'boolean', example: true },
-                jobId: { type: 'string', example: 'ZTC-GK420d-3' },
-              },
-            },
-          },
-        },
+                jobId: { type: 'string', example: 'ZTC-GK420d-3' }
+              }
+            }
+          }
+        }
       },
       PrintFailure: {
         description: 'Print failed',
@@ -396,11 +396,11 @@ export const OPENAPI_SPEC = {
               type: 'object',
               properties: {
                 success: { const: false },
-                error: { type: 'string' },
-              },
-            },
-          },
-        },
+                error: { type: 'string' }
+              }
+            }
+          }
+        }
       },
       ValidationError: {
         description: 'Invalid request body',
@@ -416,14 +416,14 @@ export const OPENAPI_SPEC = {
                     type: 'object',
                     properties: {
                       field: { type: 'string' },
-                      message: { type: 'string' },
-                    },
-                  },
-                },
-              },
-            },
-          },
-        },
+                      message: { type: 'string' }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
       },
       PrinterUnavailable: {
         description: 'No printer connected',
@@ -433,28 +433,28 @@ export const OPENAPI_SPEC = {
               type: 'object',
               properties: {
                 success: { const: false },
-                error: { type: 'string', example: 'No printer connected' },
-              },
-            },
-          },
-        },
-      },
+                error: { type: 'string', example: 'No printer connected' }
+              }
+            }
+          }
+        }
+      }
     },
     securitySchemes: {
       bearerAuth: {
         type: 'http',
         scheme: 'bearer',
-        description: 'API key set via ZEBRA_API_KEY environment variable',
-      },
-    },
+        description: 'API key set via ZEBRA_API_KEY environment variable'
+      }
+    }
   },
   security: [],
   tags: [
     { name: 'System', description: 'Health and status endpoints' },
     { name: 'Discovery', description: 'Printer discovery' },
-    { name: 'Printing', description: 'Label printing endpoints' },
-  ],
-} as const;
+    { name: 'Printing', description: 'Label printing endpoints' }
+  ]
+} as const
 
 /**
  * HTML page that renders Swagger UI from the OpenAPI spec.
@@ -488,5 +488,5 @@ export function swaggerUiHtml(specUrl: string): string {
     });
   </script>
 </body>
-</html>`;
+</html>`
 }

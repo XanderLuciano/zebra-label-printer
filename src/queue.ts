@@ -11,7 +11,7 @@
  *   - All state transitions logged to job_logs
  */
 
-import { Printer } from './printer';
+import type { Printer } from './printer'
 import {
   createJob,
   getNextPendingJob,
@@ -19,11 +19,11 @@ import {
   setJobZpl,
   countPendingJobs,
   addJobLog,
-  type JobType,
-} from './db/print-job-repo';
+  type JobType
+} from './db/print-job-repo'
 import {
-  recordPrinterEvent,
-} from './db/settings-repo';
+  recordPrinterEvent
+} from './db/settings-repo'
 
 export interface QueuedPrintResult {
   success: boolean;
@@ -33,14 +33,14 @@ export interface QueuedPrintResult {
 }
 
 export class PrintQueue {
-  private printer: Printer;
-  private processorInterval: ReturnType<typeof setInterval> | null = null;
-  private processing = false;
-  private checkIntervalMs: number;
+  private printer: Printer
+  private processorInterval: ReturnType<typeof setInterval> | null = null
+  private processing = false
+  private checkIntervalMs: number
 
   constructor(printer: Printer, checkIntervalMs = 5000) {
-    this.printer = printer;
-    this.checkIntervalMs = checkIntervalMs;
+    this.printer = printer
+    this.checkIntervalMs = checkIntervalMs
   }
 
   /**
@@ -50,65 +50,65 @@ export class PrintQueue {
     jobType: JobType,
     requestData: unknown,
     zplGenerator: () => string,
-    printerName?: string,
+    printerName?: string
   ): Promise<QueuedPrintResult> {
     // Always persist the job first
-    const job = createJob(jobType, requestData, undefined, printerName ?? this.printer.name);
+    const job = createJob(jobType, requestData, undefined, printerName ?? this.printer.name)
 
     // Try immediate print
-    const isReady = await this.printer.isReady();
+    const isReady = await this.printer.isReady()
     if (isReady) {
       try {
-        updateJobStatus(job.id, 'printing');
-        const zpl = zplGenerator();
-        setJobZpl(job.id, zpl);
+        updateJobStatus(job.id, 'printing')
+        const zpl = zplGenerator()
+        setJobZpl(job.id, zpl)
 
-        const result = await this.printer.print(zpl);
+        const result = await this.printer.print(zpl)
         if (result.success) {
           updateJobStatus(job.id, 'completed', {
-            cupsJobId: result.jobId,
-          });
-          return { success: true, jobId: job.id, queued: false };
+            cupsJobId: result.jobId
+          })
+          return { success: true, jobId: job.id, queued: false }
         } else {
           updateJobStatus(job.id, 'failed', {
-            errorMessage: result.error,
-          });
+            errorMessage: result.error
+          })
           return {
             success: false,
             jobId: job.id,
             queued: false,
-            error: result.error,
-          };
+            error: result.error
+          }
         }
       } catch (err) {
-        const msg = (err as Error).message;
-        updateJobStatus(job.id, 'pending'); // Revert to pending for retry
-        addJobLog(job.id, 'warn', `Immediate print failed, queued: ${msg}`);
+        const msg = (err as Error).message
+        updateJobStatus(job.id, 'pending') // Revert to pending for retry
+        addJobLog(job.id, 'warn', `Immediate print failed, queued: ${msg}`)
       }
     }
 
     // Queue for later
-    addJobLog(job.id, 'info', 'Queued — printer not ready');
-    recordPrinterEvent(this.printer.name, 'disconnected', 'Job queued: printer unavailable');
+    addJobLog(job.id, 'info', 'Queued — printer not ready')
+    recordPrinterEvent(this.printer.name, 'disconnected', 'Job queued: printer unavailable')
 
-    return { success: true, jobId: job.id, queued: true };
+    return { success: true, jobId: job.id, queued: true }
   }
 
   /**
    * Start the background queue processor.
    */
   start(): void {
-    if (this.processorInterval) return;
+    if (this.processorInterval) return
 
-    console.log('[queue] Queue processor started');
+    console.log('[queue] Queue processor started')
     this.processorInterval = setInterval(() => {
       this.processNext().catch(err => {
-        console.error('Queue processor error:', err);
-      });
-    }, this.checkIntervalMs);
+        console.error('Queue processor error:', err)
+      })
+    }, this.checkIntervalMs)
 
     // Also check immediately
-    this.processNext().catch(() => {});
+    this.processNext().catch(() => {})
   }
 
   /**
@@ -116,9 +116,9 @@ export class PrintQueue {
    */
   stop(): void {
     if (this.processorInterval) {
-      clearInterval(this.processorInterval);
-      this.processorInterval = null;
-      console.log('[queue] Queue processor stopped');
+      clearInterval(this.processorInterval)
+      this.processorInterval = null
+      console.log('[queue] Queue processor stopped')
     }
   }
 
@@ -126,49 +126,49 @@ export class PrintQueue {
    * Process the next pending job, if any.
    */
   async processNext(): Promise<boolean> {
-    if (this.processing) return false;
-    this.processing = true;
+    if (this.processing) return false
+    this.processing = true
 
     try {
-      const isReady = await this.printer.isReady();
-      if (!isReady) return false;
+      const isReady = await this.printer.isReady()
+      if (!isReady) return false
 
-      const job = getNextPendingJob();
-      if (!job) return false;
+      const job = getNextPendingJob()
+      if (!job) return false
 
-      addJobLog(job.id, 'info', 'Processing from queue');
-      updateJobStatus(job.id, 'printing');
+      addJobLog(job.id, 'info', 'Processing from queue')
+      updateJobStatus(job.id, 'printing')
 
       // Generate ZPL if not already done
-      let zpl = job.zpl_commands;
+      let zpl = job.zpl_commands
       if (!zpl) {
         // Reconstruct from request data
         try {
-          const data = JSON.parse(job.request_data);
-          zpl = await this.rebuildZpl(job.job_type, data);
-          if (zpl) setJobZpl(job.id, zpl);
+          const data = JSON.parse(job.request_data)
+          zpl = await this.rebuildZpl(job.job_type, data)
+          if (zpl) setJobZpl(job.id, zpl)
         } catch {
           updateJobStatus(job.id, 'failed', {
-            errorMessage: 'Failed to rebuild ZPL from queued request',
-          });
-          return false;
+            errorMessage: 'Failed to rebuild ZPL from queued request'
+          })
+          return false
         }
       }
 
-      const result = await this.printer.print(zpl!);
+      const result = await this.printer.print(zpl!)
       if (result.success) {
-        updateJobStatus(job.id, 'completed', { cupsJobId: result.jobId });
-        recordPrinterEvent(this.printer.name, 'recovered', `Job ${job.id} printed from queue`);
-        return true;
+        updateJobStatus(job.id, 'completed', { cupsJobId: result.jobId })
+        recordPrinterEvent(this.printer.name, 'recovered', `Job ${job.id} printed from queue`)
+        return true
       } else {
-        updateJobStatus(job.id, 'failed', { errorMessage: result.error });
-        return false;
+        updateJobStatus(job.id, 'failed', { errorMessage: result.error })
+        return false
       }
     } catch (err) {
-      console.error('Queue process error:', err);
-      return false;
+      console.error('Queue process error:', err)
+      return false
     } finally {
-      this.processing = false;
+      this.processing = false
     }
   }
 
@@ -177,59 +177,62 @@ export class PrintQueue {
    */
   private async rebuildZpl(jobType: JobType, data: Record<string, unknown>): Promise<string | null> {
     // Dynamic imports to avoid circular dependencies
-    const { textLabel, barcodeLabel, qrLabel } = await import('./zpl');
-    const { ZPLBuilder } = await import('./zpl');
+    const { textLabel, barcodeLabel, qrLabel } = await import('./zpl')
+    const { ZPLBuilder } = await import('./zpl')
 
     switch (jobType) {
       case 'text': {
-        const lines = data.lines as string[];
-        if (lines?.length) return textLabel(lines, {});
-        break;
+        const lines = data.lines as string[]
+        if (lines?.length) return textLabel(lines, {})
+        break
       }
       case 'barcode': {
-        const bcData = data.data as string;
-        if (bcData) return barcodeLabel(bcData, (data.type as 'CODE128') ?? 'CODE128', data.text as string | undefined);
-        break;
+        const bcData = data.data as string
+        if (bcData) return barcodeLabel(bcData, (data.type as 'CODE128') ?? 'CODE128', data.text as string | undefined)
+        break
       }
       case 'qr': {
-        const qrData = data.data as string;
-        if (qrData) return qrLabel(qrData, data.text as string | undefined, {
-          magnification: data.magnification as number | undefined,
-        });
-        break;
+        const qrData = data.data as string
+        if (qrData) {
+          return qrLabel(qrData, data.text as string | undefined, {
+            magnification: data.magnification as number | undefined
+          })
+        }
+        break
       }
       case 'label': {
-        const elements = data.elements as Array<Record<string, unknown>>;
+        const elements = data.elements as Array<Record<string, unknown>>
         if (elements?.length) {
-          const builder = new ZPLBuilder();
+          const builder = new ZPLBuilder()
           for (const el of elements) {
-            builder.element(el as any);
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            builder.element(el as any)
           }
-          return builder.build();
+          return builder.build()
         }
-        break;
+        break
       }
       case 'zpl': {
-        const zpl = data.zpl as string;
-        if (zpl) return zpl;
-        break;
+        const zpl = data.zpl as string
+        if (zpl) return zpl
+        break
       }
     }
-    return null;
+    return null
   }
 
   /** Get number of pending jobs */
   getPendingCount(): number {
-    return countPendingJobs();
+    return countPendingJobs()
   }
 
   /** Cancel a pending job */
   cancelJob(jobId: string): boolean {
     try {
-      updateJobStatus(jobId, 'cancelled');
-      return true;
+      updateJobStatus(jobId, 'cancelled')
+      return true
     } catch {
-      return false;
+      return false
     }
   }
 }

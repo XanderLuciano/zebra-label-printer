@@ -26,11 +26,11 @@
  */
 
 // Core classes
-export { Printer } from './printer';
-export { ZPLBuilder } from './zpl';
+export { Printer } from './printer'
+export { ZPLBuilder } from './zpl'
 
 // Discovery
-export { discoverPrinters, findFirstZebra, getPrinter } from './discovery';
+export { discoverPrinters, findFirstZebra, getPrinter } from './discovery'
 
 // ZPL helpers
 export {
@@ -41,8 +41,8 @@ export {
   mmToDots,
   LABEL_SIZES,
   ZEBRA_DPI,
-  FONTS,
-} from './zpl';
+  FONTS
+} from './zpl'
 
 // Label templates
 export {
@@ -51,11 +51,11 @@ export {
   assetTag,
   qrCodeLabel,
   itemLabel,
-  customLabel,
-} from './label';
+  customLabel
+} from './label'
 
 // Webhook server (modular: see src/server/ for internals)
-export { WebhookServer, startServer } from './server/index';
+export { WebhookServer, startServer } from './server/index'
 
 // Validation schemas
 export {
@@ -65,19 +65,19 @@ export {
   zplSchema,
   labelSchema,
   serialLabelSchema,
-  clearJobsSchema,
-} from './schemas';
+  clearJobsSchema
+} from './schemas'
 export type {
   TextLabelRequest,
   BarcodeLabelRequest,
   QRLabelRequest,
   LabelRequest,
   SerialLabelRequest,
-  ClearJobsRequest,
-} from './schemas';
+  ClearJobsRequest
+} from './schemas'
 
 // OpenAPI spec (for custom docs integration)
-export { OPENAPI_SPEC, swaggerUiHtml } from './openapi';
+export { OPENAPI_SPEC, swaggerUiHtml } from './openapi'
 
 // Types
 export type {
@@ -91,5 +91,5 @@ export type {
   DiscoveryOptions,
   WebhookConfig,
   BarcodeType,
-  LabelSize,
-} from './types';
+  LabelSize
+} from './types'

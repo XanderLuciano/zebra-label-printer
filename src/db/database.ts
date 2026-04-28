@@ -5,38 +5,38 @@
  * Schema migrations run automatically on first access.
  */
 
-import Database from 'better-sqlite3';
-import path from 'path';
-import fs from 'fs';
+import Database from 'better-sqlite3'
+import path from 'path'
+import fs from 'fs'
 
-let db: Database.Database | null = null;
-const DB_PATH = process.env.ZEBRA_DB_PATH || path.join(process.cwd(), 'data', 'zebra-label-printer.db');
+let db: Database.Database | null = null
+const DB_PATH = process.env.ZEBRA_DB_PATH || path.join(process.cwd(), 'data', 'zebra-label-printer.db')
 
 /** Get the database singleton, creating it if needed */
 export function getDb(): Database.Database {
   if (!db) {
-    const dir = path.dirname(DB_PATH);
+    const dir = path.dirname(DB_PATH)
     if (!fs.existsSync(dir)) {
-      fs.mkdirSync(dir, { recursive: true });
+      fs.mkdirSync(dir, { recursive: true })
     }
 
-    db = new Database(DB_PATH);
+    db = new Database(DB_PATH)
 
     // Performance settings
-    db.pragma('journal_mode = WAL');
-    db.pragma('foreign_keys = ON');
-    db.pragma('busy_timeout = 5000');
+    db.pragma('journal_mode = WAL')
+    db.pragma('foreign_keys = ON')
+    db.pragma('busy_timeout = 5000')
 
-    runMigrations(db);
+    runMigrations(db)
   }
-  return db;
+  return db
 }
 
 /** Close the database connection (for graceful shutdown) */
 export function closeDb(): void {
   if (db) {
-    db.close();
-    db = null;
+    db.close()
+    db = null
   }
 }
 
@@ -50,22 +50,22 @@ function runMigrations(database: Database.Database): void {
       name TEXT NOT NULL UNIQUE,
       applied_at TEXT NOT NULL DEFAULT (datetime('now'))
     );
-  `);
+  `)
 
   const applied = new Set(
     database
       .prepare('SELECT name FROM _migrations')
       .all()
-      .map((r: unknown) => (r as { name: string }).name),
-  );
+      .map((r: unknown) => (r as { name: string }).name)
+  )
 
   for (const migration of MIGRATIONS) {
     if (!applied.has(migration.name)) {
-      database.exec(migration.sql);
+      database.exec(migration.sql)
       database
         .prepare('INSERT INTO _migrations (name) VALUES (?)')
-        .run(migration.name);
-      console.log(`  📦 Migration: ${migration.name}`);
+        .run(migration.name)
+      console.log(`  📦 Migration: ${migration.name}`)
     }
   }
 }
@@ -128,6 +128,6 @@ const MIGRATIONS: Migration[] = [
         message TEXT,
         created_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
-    `,
-  },
-];
+    `
+  }
+]

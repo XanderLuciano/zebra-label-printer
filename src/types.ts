@@ -70,7 +70,7 @@ export type BarcodeType =
   | 'CODABAR'
   | 'PDF417'
   | 'QRCODE'
-  | 'DATAMATRIX';
+  | 'DATAMATRIX'
 
 /** Options for a QR code (2D barcode) element */
 export interface QROptions {
@@ -89,7 +89,7 @@ export type LabelElement =
   | { type: 'text'; content: string; options: TextOptions }
   | { type: 'barcode'; content: string; options: BarcodeOptions }
   | { type: 'qrcode'; content: string; options: QROptions }
-  | { type: 'raw'; zpl: string };
+  | { type: 'raw'; zpl: string }
 
 /** Options for a complete label */
 export interface LabelOptions {

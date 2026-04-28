@@ -30,7 +30,7 @@ const formatUptime = (s: number) => {
           <span class="font-medium">Printer</span>
         </div>
       </template>
-      <div class="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm" v-if="debug?.printer">
+      <div v-if="debug?.printer" class="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm">
         <div>
           <span class="text-gray-500">Name</span>
           <p class="font-medium">{{ debug.printer.name }}</p>
@@ -56,7 +56,7 @@ const formatUptime = (s: number) => {
           <span class="font-medium">Queue</span>
         </div>
       </template>
-      <div class="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm" v-if="debug?.queue">
+      <div v-if="debug?.queue" class="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm">
         <div>
           <span class="text-gray-500">Pending</span>
           <p class="font-medium">{{ debug.queue.pending }}</p>
@@ -82,7 +82,7 @@ const formatUptime = (s: number) => {
           <span class="font-medium">Database</span>
         </div>
       </template>
-      <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm" v-if="debug?.database">
+      <div v-if="debug?.database" class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
         <div>
           <span class="text-gray-500">Size</span>
           <p class="font-medium">{{ debug.database.sizeFormatted }}</p>
@@ -110,7 +110,7 @@ const formatUptime = (s: number) => {
           <span class="font-medium">Server</span>
         </div>
       </template>
-      <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm" v-if="debug?.server">
+      <div v-if="debug?.server" class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
         <div>
           <span class="text-gray-500">Uptime</span>
           <p class="font-medium">{{ formatUptime(debug.server.uptime) }}</p>

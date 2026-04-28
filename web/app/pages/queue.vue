@@ -9,7 +9,7 @@ const { data, refresh } = useAsyncData('queue-jobs', () =>
 watch(statusFilter, () => refresh());
 
 // Auto-refresh
-const { pause, resume } = useIntervalFn(() => {
+const { pause } = useIntervalFn(() => {
   refresh();
 }, 5000);
 
