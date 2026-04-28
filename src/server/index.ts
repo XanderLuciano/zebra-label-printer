@@ -8,6 +8,8 @@
  */
 
 import { createServer, IncomingMessage, ServerResponse } from 'http';
+import { createReadStream, existsSync, statSync } from 'fs';
+import { join, extname } from 'path';
 import { Printer } from '../printer';
 import { PrintQueue } from '../queue';
 import { json } from './helpers';
@@ -34,6 +36,8 @@ import {
   printQrHandler,
   printZplHandler,
   printLabelHandler,
+  printSerialHandler,
+  clearJobsHandler,
 } from './handlers/post-routes';
 import { closeDb } from '../db/database';
 import type { WebhookConfig } from '../types';
@@ -95,9 +99,11 @@ export class WebhookServer {
     post.set('/api/print/qr', printQrHandler(apiKey, getQueue));
     post.set('/api/print/zpl', printZplHandler(apiKey, getQueue));
     post.set('/api/print/label', printLabelHandler(apiKey, getQueue));
+    post.set('/api/print/serial', printSerialHandler(apiKey, getQueue));
 
     // Job actions
     post.set('/api/jobs/cancel', jobCancelHandler(apiKey, getQueue));
+    post.set('/api/jobs/clear', clearJobsHandler(apiKey));
 
     table.set('POST', post);
 
@@ -106,6 +112,11 @@ export class WebhookServer {
     put.set('/api/settings', settingsPutHandler(apiKey));
     put.set('/api/label-size', labelSizePutHandler(apiKey));
     table.set('PUT', put);
+
+    // ── DELETE routes ──────────────────────────────────────────────────────
+    const del = new Map<string, Handler>();
+    del.set('/api/jobs/clear', clearJobsHandler(apiKey));
+    table.set('DELETE', del);
 
     return table;
   }
@@ -133,13 +144,28 @@ export class WebhookServer {
       return jobCancelHandler(this.config.apiKey, () => this.queue);
     }
 
+    // Pattern: DELETE /api/jobs/:id
+    if (method === 'DELETE' && pathname.startsWith('/api/jobs/') && !pathname.endsWith('/cancel') && !pathname.endsWith('/clear')) {
+      const parts = pathname.split('/');
+      const jobId = parts[3];
+      return async (_req, res, _printer) => {
+        const { getDb } = await import('../db/database');
+        try {
+          getDb().prepare('DELETE FROM print_jobs WHERE id = ?').run(jobId);
+          json(res, { success: true });
+        } catch {
+          json(res, { error: 'Failed to delete job' }, 500);
+        }
+      };
+    }
+
     return null;
   }
 
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     // CORS
     res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, OPTIONS');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
 
     if (req.method === 'OPTIONS') {
@@ -150,6 +176,13 @@ export class WebhookServer {
 
     const url = new URL(req.url ?? '/', `http://${req.headers.host}`);
     const method = req.method?.toUpperCase() ?? 'GET';
+
+    // Serve static web UI for non-API routes
+    if (method === 'GET' && !url.pathname.startsWith('/api/')) {
+      this.serveStatic(url.pathname, res);
+      return;
+    }
+
     const handler = this.matchRoute(method, url.pathname);
 
     if (!handler) {
@@ -216,6 +249,42 @@ export class WebhookServer {
 
       this.httpServer.on('error', reject);
     });
+  }
+
+  /** Serve static Nuxt web UI files */
+  private serveStatic(pathname: string, res: ServerResponse): void {
+    const mimeTypes: Record<string, string> = {
+      '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
+      '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml',
+      '.woff2': 'font/woff2', '.woff': 'font/woff', '.ico': 'image/x-icon',
+    };
+
+    // Try web/.output/public/ first, then fallback paths
+    const staticDir = join(process.cwd(), 'web', '.output', 'public');
+    let filePath = join(staticDir, pathname === '/' ? 'index.html' : pathname);
+
+    // SPA fallback: if file doesn't exist, serve index.html
+    if (!existsSync(filePath) || !statSync(filePath).isFile()) {
+      filePath = join(staticDir, 'index.html');
+    }
+
+    if (!existsSync(filePath)) {
+      res.writeHead(404);
+      res.end('Not found');
+      return;
+    }
+
+    const ext = extname(filePath);
+    const contentType = mimeTypes[ext] || 'application/octet-stream';
+
+    try {
+      const stream = createReadStream(filePath);
+      res.writeHead(200, { 'Content-Type': contentType });
+      stream.pipe(res);
+    } catch {
+      res.writeHead(500);
+      res.end('Internal error');
+    }
   }
 
   /** Stop the HTTP server, queue processor, and close the database. */

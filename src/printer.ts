@@ -81,10 +81,29 @@ export class Printer {
 
   /**
    * Check that the printer is ready to accept jobs.
+   * Attempts to re-enable the printer if CUPS has disabled it (e.g., USB disconnect).
    */
   async isReady(): Promise<boolean> {
     const info = await getPrinter(this.name);
-    return info?.status === 'idle' && info?.accepting === true;
+    if (!info) return false;
+
+    if (info.status === 'idle' && info.accepting) return true;
+
+    // Try to re-enable if CUPS disabled the printer
+    if (!info.accepting || info.status === 'unavailable') {
+      try {
+        const { exec } = await import('child_process');
+        const { promisify } = await import('util');
+        await promisify(exec)(`cupsenable ${this.name}`, { timeout: 5000 });
+        // Re-check
+        const recheck = await getPrinter(this.name);
+        return recheck?.status === 'idle' && recheck?.accepting === true;
+      } catch {
+        return false;
+      }
+    }
+
+    return false;
   }
 
   /**

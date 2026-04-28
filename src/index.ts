@@ -64,12 +64,16 @@ export {
   qrLabelSchema,
   zplSchema,
   labelSchema,
+  serialLabelSchema,
+  clearJobsSchema,
 } from './schemas';
 export type {
   TextLabelRequest,
   BarcodeLabelRequest,
   QRLabelRequest,
   LabelRequest,
+  SerialLabelRequest,
+  ClearJobsRequest,
 } from './schemas';
 
 // OpenAPI spec (for custom docs integration)

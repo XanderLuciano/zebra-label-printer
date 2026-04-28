@@ -110,9 +110,29 @@ export const labelSchema = z.object({
   copies: z.number().int().min(1).max(10).optional(),
 }).strict();
 
+// ─── Serial / batch printing ────────────────────────────────────────────────
+
+/** POST /api/print/serial — multi-copy with auto-incrementing serial numbers */
+export const serialLabelSchema = z.object({
+  lines: z.array(z.string().min(1)).min(1, 'At least one line required').max(20, 'Max 20 lines'),
+  copies: z.number().int().min(1).max(500, 'Max 500 copies'),
+  serialStart: z.number().int().min(0).default(1),
+  serialFormat: z.enum(['#', '##', '###', '####', '#####']).optional().default('###'),
+}).strict();
+
+// ─── Queue management ───────────────────────────────────────────────────────
+
+/** POST /api/jobs/clear — bulk clear completed/cancelled jobs */
+export const clearJobsSchema = z.object({
+  status: z.enum(['completed', 'failed', 'cancelled', 'all']).optional().default('completed'),
+  olderThanDays: z.number().int().min(1).max(365).optional(),
+}).strict();
+
 // ─── Type exports ───────────────────────────────────────────────────────────
 
 export type TextLabelRequest = z.infer<typeof textLabelSchema>;
 export type BarcodeLabelRequest = z.infer<typeof barcodeLabelSchema>;
 export type QRLabelRequest = z.infer<typeof qrLabelSchema>;
 export type LabelRequest = z.infer<typeof labelSchema>;
+export type SerialLabelRequest = z.infer<typeof serialLabelSchema>;
+export type ClearJobsRequest = z.infer<typeof clearJobsSchema>;
