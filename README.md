@@ -1,42 +1,53 @@
 # 🦓 Zebra Label Printer
 
-TypeScript library + web UI for Zebra GK420d label printers (and compatible ZPL printers). Print text, barcodes, QR codes, and custom labels — programmatically, via CLI, through a REST API, or from a web dashboard.
+Print labels on Zebra GK420d printers from any device on your network. Text, barcodes, QR codes, serial numbers — via web dashboard, REST API, or CLI.
+
+```bash
+# One-command install
+curl -fsSL https://raw.githubusercontent.com/XanderLuciano/zebra-label-printer/v0.1.0/install.sh | bash
+
+# Print a label
+curl -X POST http://localhost:3420/api/print/text \
+  -H "Content-Type: application/json" \
+  -d '{"lines":["Hello World"]}'
+
+# Open the web dashboard
+open http://localhost:3420
+```
+
+## Quick Install
+
+| Method | Command |
+|--------|---------|
+| **One-liner** (Linux/Mac) | `curl -fsSL https://raw.githubusercontent.com/XanderLuciano/zebra-label-printer/v0.1.0/install.sh \| bash` |
+| **From source** | `git clone` → `bash build.sh` → `node dist/server/index.js` |
+| **Docker** | `docker compose up -d` |
+| **npm global** | `npm install -g zebra-label-printer && zebra-label serve` |
+
+Everything runs on **port 3420**: web dashboard at `/`, API at `/api/*`, docs at `/api/docs`.
 
 ## Features
 
-- **Zero-config discovery** — auto-finds Zebra printers via CUPS
-- **Fluent ZPL builder** — type-safe label composition with text, 1D barcodes, QR codes, lines, and boxes
-- **Label templates** — shipping labels, asset tags, item labels, QR code labels
+- **Web dashboard** — Nuxt 4 UI with printer status, quick print, history, queue management, debug info, settings
 - **Persistent job queue** — SQLite-backed, survives reboots, auto-retries when printer reconnects
-- **Web dashboard** — Nuxt 4 UI with printer status, print history, queue management, debug info
-- **Label size management** — API + UI to get/set label dimensions, tracks recent sizes for hot-swapping
-- **CLI tool** — quick printing from the terminal
-- **REST API** — 18 endpoints with Zod validation and Swagger docs
+- **Auto-recovery** — CUPS auto-re-enable on USB disconnect/reconnect
+- **Serial number printing** — batch print with auto-incrementing `{serial}` placeholder
+- **Label size management** — 6 standard sizes + custom, recent sizes tracked for hot-swapping
+- **Zod validation** — all endpoints validated, structured 400s with field-level errors
 - **OpenAPI docs** — interactive Swagger UI at `/api/docs`
-- **Full TypeScript** — strict mode, types included
+- **ZPL builder** — fluent TypeScript API for text, 8 barcode types, QR codes, Data Matrix
+- **CLI tool** — `zebra-label print-text`, `zebra-label print-bc`, `zebra-label discover`
+- **Zero-config discovery** — auto-finds Zebra printers via CUPS
 
-## Running
-
-Everything runs on **one port — 3420**:
-- `http://localhost:3420/` → Web UI dashboard
-- `http://localhost:3420/api/*` → REST API
-- `http://localhost:3420/api/docs` → Swagger UI
-
-### Quick Install (Linux/macOS)
+## CLI
 
 ```bash
-curl -fsSL https://raw.githubusercontent.com/XanderLuciano/zebra-label-printer/main/install.sh | bash
-```
-
-Installs Node.js (if needed), installs globally, configures auto-start on boot.
-
-### Manual Install
-
-```bash
-git clone https://github.com/XanderLuciano/zebra-label-printer.git
-cd zebra-label-printer
-bash build.sh
-node dist/server/index.js   # → http://localhost:3420
+zebra-label discover        # List printers
+zebra-label print-test       # Test label (text + barcode + QR)
+zebra-label print-text "Hi"  # Quick text label
+zebra-label print-bc "SKU-123" "Widget"  # Barcode label
+zebra-label print-qr "https://example.com" "Scan"  # QR code
+zebra-label serve            # Start API + web UI
 ```
 
 ### Docker
@@ -49,30 +60,11 @@ docker-compose up -d
 ### Development
 
 ```bash
-# Terminal 1: API server
+# API server
 npx tsx src/server/index.ts    # → :3420
 
-# Terminal 2: Rebuild UI when changing Vue files
+# UI dev (optional — already bundled in API server)
 cd web && npm install && npm run dev   # → :3000
-```
-
-### CLI
-
-```bash
-# Discover printers
-npx tsx src/cli.ts discover
-
-# Test print (text + barcode + QR on one label)
-npx tsx src/cli.ts print-test
-
-# Text label
-npx tsx src/cli.ts print-text "Kitchen Utensils"
-
-# Barcode label
-npx tsx src/cli.ts print-bc "INV-42069" "Kitchen Cabinet Hardware"
-
-# QR code label
-npx tsx src/cli.ts print-qr "https://github.com" "Scan Me"
 ```
 
 ## API Reference
