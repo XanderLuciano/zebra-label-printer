@@ -95,7 +95,7 @@ export function updateJobStatus(
     params.push(extra.errorMessage);
   }
 
-  params.unshift(id);
+  params.push(id);
   db.prepare(`UPDATE print_jobs SET ${updates.join(', ')} WHERE id = ?`).run(...params);
   addJobLog(id, 'info', `Status → ${status}`);
 }
