@@ -66,16 +66,15 @@ async function main(): Promise<void> {
     }
 
     case 'print-text': {
-      const printerName = args[0]?.startsWith('-') ? undefined : args[0];
-      const textArgs = printerName ? args.slice(1) : args;
-      const text = textArgs.join(' ');
+      const text = args.join(' ');
 
       if (!text) {
-        console.error('Usage: zebra-label print-text [printer] "Hello World"');
+        console.error('Usage: zebra-label print-text "Hello World"');
+        console.error('Set ZEBRA_PRINTER env var for a specific printer');
         process.exit(1);
       }
 
-      const printer = await Printer.connectOrAuto(printerName);
+      const printer = await Printer.connectOrAuto(process.env.ZEBRA_PRINTER);
       const zpl = textLabel([text], {});
       const result = await printer.print(zpl);
       console.log(result.success ? `✅ Printed: "${text}" (Job: ${result.jobId})` : `❌ Failed: ${result.error}`);
@@ -83,17 +82,16 @@ async function main(): Promise<void> {
     }
 
     case 'print-bc': {
-      const printerName = args[0]?.startsWith('-') ? undefined : args[0];
-      const bcArgs = printerName ? args.slice(1) : args;
-      const data = bcArgs[0];
-      const labelText = bcArgs.slice(1).join(' ') || undefined;
+      const data = args[0];
+      const labelText = args.slice(1).join(' ') || undefined;
 
       if (!data) {
-        console.error('Usage: zebra-label print-bc [printer] BARCODE_DATA [label text]');
+        console.error('Usage: zebra-label print-bc BARCODE_DATA [label text]');
+        console.error('Set ZEBRA_PRINTER env var for a specific printer');
         process.exit(1);
       }
 
-      const printer = await Printer.connectOrAuto(printerName);
+      const printer = await Printer.connectOrAuto(process.env.ZEBRA_PRINTER);
       const zpl = barcodeLabel(data, 'CODE128', labelText);
       const result = await printer.print(zpl);
       console.log(result.success ? `✅ Printed barcode: ${data} (Job: ${result.jobId})` : `❌ Failed: ${result.error}`);
@@ -101,17 +99,16 @@ async function main(): Promise<void> {
     }
 
     case 'print-qr': {
-      const printerName = args[0]?.startsWith('-') ? undefined : args[0];
-      const qrArgs = printerName ? args.slice(1) : args;
-      const data = qrArgs[0];
-      const labelText = qrArgs.slice(1).join(' ') || undefined;
+      const data = args[0];
+      const labelText = args.slice(1).join(' ') || undefined;
 
       if (!data) {
-        console.error('Usage: zebra-label print-qr [printer] DATA [label text]');
+        console.error('Usage: zebra-label print-qr DATA [label text]');
+        console.error('Set ZEBRA_PRINTER env var for a specific printer');
         process.exit(1);
       }
 
-      const printer = await Printer.connectOrAuto(printerName);
+      const printer = await Printer.connectOrAuto(process.env.ZEBRA_PRINTER);
       const zpl = qrLabel(data, labelText);
       const result = await printer.print(zpl);
       console.log(result.success ? `✅ Printed QR: ${data} (Job: ${result.jobId})` : `❌ Failed: ${result.error}`);
@@ -144,9 +141,9 @@ async function main(): Promise<void> {
 Commands:
   discover                  List available printers
   print-test [printer]      Print a test label with text, barcode, and QR
-  print-text [printer] <text>      Print a simple text label
-  print-bc [printer] <data> [text] Print a barcode label
-  print-qr [printer] <data> [text] Print a QR code label
+  print-text <text>              Print a simple text label
+  print-bc <data> [text]         Print a barcode label
+  print-qr <data> [text]         Print a QR code label
   serve [printer]           Start the webhook server
 
 Environment:
