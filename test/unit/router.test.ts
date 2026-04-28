@@ -2,10 +2,10 @@
  * Tests for route table and dispatch logic.
  */
 import { describe, it, expect } from 'vitest';
-import type { RouteTable } from '../src/server/router';
-import { findHandler, printRoutes } from '../src/server/router';
+import type { RouteTable } from '../../src/server/router';
+import { findHandler, printRoutes } from '../../src/server/router';
 
-import type { Handler } from '../src/server/router';
+import type { Handler } from '../../src/server/router';
 
 const noopHandler: Handler = async (_req, _res, _printer) => {};
 

@@ -13,6 +13,7 @@
   ],
   "scripts": {
     "build": "tsc",
+    "typecheck": "tsc --noEmit",
     "dev": "tsx watch src/webhook.ts",
     "test": "vitest run",
     "test:watch": "vitest",

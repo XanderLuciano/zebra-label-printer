@@ -10,7 +10,7 @@ import {
   labelSchema,
   serialLabelSchema,
   clearJobsSchema,
-} from '../src/schemas';
+} from '../../src/schemas';
 
 describe('textLabelSchema', () => {
   it('accepts valid text request', () => {

@@ -13,7 +13,7 @@ import {
   LABEL_SIZES,
   ZEBRA_DPI,
   FONTS,
-} from '../src/zpl';
+} from '../../src/zpl';
 
 describe('ZPLBuilder', () => {
   it('builds a minimal text label', () => {

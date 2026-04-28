@@ -3,8 +3,8 @@
  */
 import { describe, it, expect } from 'vitest';
 import { IncomingMessage, ServerResponse } from 'http';
-import { json, html, readBody, parseJson, checkAuth } from '../src/server/helpers';
-import { textLabelSchema } from '../src/schemas';
+import { json, html, readBody, parseJson, checkAuth } from '../../src/server/helpers';
+import { textLabelSchema } from '../../src/schemas';
 
 // Helper to create mock req/res
 function mockReqRes(body?: string) {

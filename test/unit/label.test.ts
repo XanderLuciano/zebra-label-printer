@@ -9,8 +9,8 @@ import {
   qrCodeLabel,
   itemLabel,
   customLabel,
-} from '../src/label';
-import { inchesToDots } from '../src/zpl';
+} from '../../src/label';
+import { inchesToDots } from '../../src/zpl';
 
 describe('simpleTextLabel', () => {
   it('builds a text label with title and lines', () => {
