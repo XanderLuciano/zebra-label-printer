@@ -13,9 +13,13 @@ export default defineNuxtConfig({
 
   runtimeConfig: {
     public: {
-      apiBase: process.env.NUXT_PUBLIC_API_BASE || 'http://localhost:3420',
+      // Empty = same origin (API and UI served from same port)
+      apiBase: process.env.NUXT_PUBLIC_API_BASE || '',
     },
   },
+
+  // SPA mode — generates static index.html, API server serves it
+  ssr: false,
 
   compatibilityDate: '2025-01-15',
 });

@@ -259,8 +259,27 @@ export class WebhookServer {
       '.woff2': 'font/woff2', '.woff': 'font/woff', '.ico': 'image/x-icon',
     };
 
-    // Try web/.output/public/ first, then fallback paths
-    const staticDir = join(process.cwd(), 'web', '.output', 'public');
+    // Check multiple possible locations (dev vs distributed)
+    const candidates = [
+      'public',                          // dist-zebra/public/
+      'web/.output/public',              // dev: web/.output/public/
+    ];
+
+    let staticDir = '';
+    for (const cand of candidates) {
+      const full = join(process.cwd(), cand);
+      if (existsSync(join(full, 'index.html'))) {
+        staticDir = full;
+        break;
+      }
+    }
+
+    if (!staticDir) {
+      res.writeHead(404);
+      res.end('UI not found — run build.sh first');
+      return;
+    }
+
     let filePath = join(staticDir, pathname === '/' ? 'index.html' : pathname);
 
     // SPA fallback: if file doesn't exist, serve index.html

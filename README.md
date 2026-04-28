@@ -15,59 +15,46 @@ TypeScript library + web UI for Zebra GK420d label printers (and compatible ZPL 
 - **OpenAPI docs** — interactive Swagger UI at `/api/docs`
 - **Full TypeScript** — strict mode, types included
 
-## Quick Start
+## Running
 
-### One-command install (Linux/macOS)
+Everything runs on **one port — 3420**:
+- `http://localhost:3420/` → Web UI dashboard
+- `http://localhost:3420/api/*` → REST API
+- `http://localhost:3420/api/docs` → Swagger UI
+
+### Quick Install (Linux/macOS)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/XanderLuciano/zebra-label-printer/main/install.sh | bash
 ```
 
-This installs Node.js (if needed), installs the package globally, configures auto-start on boot, and starts the server on port 3420.
+Installs Node.js (if needed), installs globally, configures auto-start on boot.
 
-### Manual install
+### Manual Install
 
 ```bash
 git clone https://github.com/XanderLuciano/zebra-label-printer.git
 cd zebra-label-printer
-npm install
-npm run build
+bash build.sh
+node dist/server/index.js   # → http://localhost:3420
 ```
 
 ### Docker
 
 ```bash
 docker-compose up -d
-# API: http://localhost:3420
-# Docs: http://localhost:3420/api/docs
+# → http://localhost:3420
 ```
 
-The Docker image uses the host's CUPS socket for printer access. For USB passthrough, uncomment the `devices` section in `docker-compose.yml`.
-
-## Running
-
-### API Server
+### Development
 
 ```bash
-# Direct
-npx tsx src/server/index.ts
+# Terminal 1: API server
+npx tsx src/server/index.ts    # → :3420
 
-# Or via global CLI
-zebra-label serve
-
-# With env vars
-ZEBRA_PRINTER=ZTC-GK420d PORT=3420 ZEBRA_API_KEY=secret npx tsx src/server/index.ts
+# Terminal 2: Rebuild UI when changing Vue files
+cd web && npm install && npm run dev   # → :3000
 ```
-
-### Web UI
-
-```bash
-cd web
-npm install
-npm run dev          # → http://localhost:3000
-```
-
-The web UI connects to the API server at `http://localhost:3420` (configurable via `NUXT_PUBLIC_API_BASE`).
 
 ### CLI
 
