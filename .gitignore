@@ -8,3 +8,4 @@ data/
 .nuxt/
 .output/
 .nitro/
+dist-zebra/

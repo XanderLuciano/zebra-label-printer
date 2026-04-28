@@ -173,3 +173,24 @@ Nuxt Web UI (web/) ──→ HTTP API (server/index.ts)
 - **ZPL**: Text labels print with the raw `-o raw` CUPS flag (bypasses CUPS filtering)
 - **No ink needed**: Thermal direct printing — the labels have heat-sensitive coating
 - **Discovery fallback**: If CUPS is unavailable, direct USB discovery can be added to `src/discovery.ts`
+
+## Release Checklist
+
+When tagging a new release:
+
+1. **Update version** in `package.json` and `web/package.json`
+2. **Run the build** — `bash build.sh` — verify it completes clean
+3. **Tag and push:**
+   ```bash
+   VER=v0.2.0
+   git tag -a $VER -m "$VER — <one-line summary>"
+   git push --tags
+   ```
+4. **Verify** the release at https://github.com/XanderLuciano/zebra-label-printer/releases
+5. **No README changes needed** — install URLs use `main` branch, always current
+
+### Changelog
+
+| Version | Date | Changes |
+|---------|------|---------|
+| v0.1.0 | 2026-04-27 | Initial release: ZPL builder, job queue, Nuxt 4 web UI, serial printing, label size management, Docker, one-command install |

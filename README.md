@@ -3,8 +3,8 @@
 Print labels on Zebra GK420d printers from any device on your network. Text, barcodes, QR codes, serial numbers — via web dashboard, REST API, or CLI.
 
 ```bash
-# One-command install
-curl -fsSL https://raw.githubusercontent.com/XanderLuciano/zebra-label-printer/v0.1.0/install.sh | bash
+# One-command install (always latest)
+curl -fsSL https://raw.githubusercontent.com/XanderLuciano/zebra-label-printer/main/install.sh | bash
 
 # Print a label
 curl -X POST http://localhost:3420/api/print/text \
@@ -19,7 +19,7 @@ open http://localhost:3420
 
 | Method | Command |
 |--------|---------|
-| **One-liner** (Linux/Mac) | `curl -fsSL https://raw.githubusercontent.com/XanderLuciano/zebra-label-printer/v0.1.0/install.sh \| bash` |
+| **One-liner** (Linux/Mac) | `curl -fsSL https://raw.githubusercontent.com/XanderLuciano/zebra-label-printer/main/install.sh \| bash` |
 | **From source** | `git clone` → `bash build.sh` → `node dist/server/index.js` |
 | **Docker** | `docker compose up -d` |
 | **npm global** | `npm install -g zebra-label-printer && zebra-label serve` |
