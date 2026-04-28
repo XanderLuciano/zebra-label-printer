@@ -1,0 +1,20 @@
+{
+  "name": "zebra-label-printer-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Web UI for managing Zebra label printers",
+  "scripts": {
+    "dev": "nuxt dev",
+    "build": "nuxt build",
+    "generate": "nuxt generate",
+    "preview": "nuxt preview"
+  },
+  "dependencies": {
+    "@iconify-json/lucide": "^1.2.0",
+    "@nuxt/ui": "^4.0.0",
+    "nuxt": "^4.0.0"
+  },
+  "devDependencies": {
+    "@nuxt/eslint": "^1.0.0"
+  }
+}

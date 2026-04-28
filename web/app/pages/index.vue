@@ -1,0 +1,151 @@
+<script setup lang="ts">
+const api = useApi();
+
+const { data: health } = useAsyncData('health', () => api.getHealth());
+const { data: debug } = useAsyncData('debug', () => api.getDebug());
+const { data: stats } = useAsyncData('stats', () => api.getJobStats());
+
+// Quick print form
+const printLines = ref('');
+const printing = ref(false);
+const printResult = ref<string | null>(null);
+
+async function quickPrint() {
+  if (!printLines.value.trim()) return;
+  printing.value = true;
+  printResult.value = null;
+
+  try {
+    const result = await api.printText({ lines: [printLines.value] });
+    printResult.value = result.success
+      ? `✅ Printed! ${result.queued ? '(Queued)' : ''}`
+      : `❌ Failed: ${result.error || 'Unknown error'}`;
+    printLines.value = '';
+    refreshNuxtData('stats');
+  } catch (err: any) {
+    printResult.value = `❌ Error: ${err.message}`;
+  } finally {
+    printing.value = false;
+  }
+}
+
+const formatBytes = (b: number) => b > 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(1)} MB` : `${(b / 1024).toFixed(1)} KB`;
+const formatUptime = (s: number) => {
+  const h = Math.floor(s / 3600);
+  const m = Math.floor((s % 3600) / 60);
+  return h > 0 ? `${h}h ${m}m` : `${m}m`;
+};
+</script>
+
+<template>
+  <div class="p-6 space-y-6">
+    <h1 class="text-2xl font-bold">Dashboard</h1>
+
+    <!-- Status cards -->
+    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+      <UCard>
+        <template #header>
+          <div class="flex items-center gap-2">
+            <UIcon name="i-lucide-printer" class="text-primary-500" />
+            <span class="text-sm font-medium">Printer Status</span>
+          </div>
+        </template>
+        <div class="flex items-center gap-2">
+          <span
+            class="inline-block w-2.5 h-2.5 rounded-full"
+            :class="health?.printer ? 'bg-green-500' : 'bg-red-500'"
+          />
+          <span class="text-lg font-semibold">{{ health?.printer || 'Not connected' }}</span>
+        </div>
+      </UCard>
+
+      <UCard>
+        <template #header>
+          <div class="flex items-center gap-2">
+            <UIcon name="i-lucide-clock" class="text-amber-500" />
+            <span class="text-sm font-medium">Pending Jobs</span>
+          </div>
+        </template>
+        <span class="text-lg font-semibold">{{ stats?.pending ?? 0 }}</span>
+      </UCard>
+
+      <UCard>
+        <template #header>
+          <div class="flex items-center gap-2">
+            <UIcon name="i-lucide-check-circle" class="text-green-500" />
+            <span class="text-sm font-medium">Completed Today</span>
+          </div>
+        </template>
+        <span class="text-lg font-semibold">{{ stats?.completed ?? 0 }}</span>
+      </UCard>
+
+      <UCard>
+        <template #header>
+          <div class="flex items-center gap-2">
+            <UIcon name="i-lucide-x-circle" class="text-red-500" />
+            <span class="text-sm font-medium">Failed</span>
+          </div>
+        </template>
+        <span class="text-lg font-semibold">{{ stats?.failed ?? 0 }}</span>
+      </UCard>
+    </div>
+
+    <!-- Quick print -->
+    <UCard>
+      <template #header>
+        <div class="flex items-center gap-2">
+          <UIcon name="i-lucide-send" />
+          <span class="font-medium">Quick Print</span>
+        </div>
+      </template>
+      <div class="space-y-3">
+        <UInput
+          v-model="printLines"
+          placeholder="Type label text and press Enter..."
+          size="lg"
+          :disabled="printing"
+          @keyup.enter="quickPrint"
+        >
+          <template #trailing>
+            <UButton
+              icon="i-lucide-arrow-right"
+              size="sm"
+              color="primary"
+              :loading="printing"
+              :disabled="!printLines.trim()"
+              @click="quickPrint"
+            />
+          </template>
+        </UInput>
+        <p v-if="printResult" class="text-sm" :class="printResult.startsWith('✅') ? 'text-green-600' : 'text-red-600'">
+          {{ printResult }}
+        </p>
+      </div>
+    </UCard>
+
+    <!-- System info -->
+    <UCard v-if="debug">
+      <template #header>
+        <span class="font-medium">System Info</span>
+      </template>
+      <div class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm">
+        <div>
+          <span class="text-gray-500">Uptime</span>
+          <p class="font-medium">{{ formatUptime(debug.server.uptime) }}</p>
+        </div>
+        <div>
+          <span class="text-gray-500">Memory</span>
+          <p class="font-medium">{{ formatBytes(debug.server.memory.rss) }}</p>
+        </div>
+        <div>
+          <span class="text-gray-500">Database</span>
+          <p class="font-medium">{{ debug.database.sizeFormatted }}</p>
+        </div>
+        <div>
+          <span class="text-gray-500">Node.js</span>
+          <p class="font-medium">{{ debug.server.nodeVersion }}</p>
+        </div>
+      </div>
+    </UCard>
+  </div>
+</template>

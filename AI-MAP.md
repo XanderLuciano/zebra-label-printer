@@ -1,5 +1,8 @@
 # AI-MAP — Zebra Label Printer Quick Reference
 
+> Master index for AI agents. Consult this FIRST before searching the codebase.  
+> Backend: TypeScript + SQLite. Frontend: Nuxt 4 + NuxtUI 4.
+
 > Master index for AI agents. Consult this FIRST before searching the codebase.
 
 ## Project Overview
@@ -12,13 +15,15 @@
 
 | Layer | Tech |
 |-------|------|
+| Backend Runtime | Node.js ≥ 18 (raw http module) |
 | Language | TypeScript 5.x (strict mode, CommonJS) |
-| Runtime | Node.js ≥ 18 |
-| HTTP Server | Node.js built-in `http` module (zero external HTTP deps) |
+| Database | SQLite via better-sqlite3 (WAL mode) |
 | Validation | Zod 4.x |
 | API Docs | OpenAPI 3.1 spec + Swagger UI (CDN-hosted) |
 | Printing | CUPS (`lp` command) via child_process |
 | CLI | Node.js shebang script, npm global install |
+| Web UI | Nuxt 4 + NuxtUI 4 (Vue 3, Tailwind CSS v4) |
+| UI Icons | @iconify-json/lucide |
 | Testing | Vitest |
 
 ## Project Structure
@@ -34,6 +39,11 @@ src/
   label.ts              → High-level label templates (shipping, asset, item, QR)
   schemas.ts            → Zod validation schemas for all API endpoints
   openapi.ts            → OpenAPI 3.1 spec object + Swagger UI HTML generator
+  db/                   → SQLite persistence layer
+    database.ts         → getDb() singleton, WAL mode, auto-migrations
+    print-job-repo.ts   → CRUD for print_jobs and job_logs tables
+    settings-repo.ts    → Key/value settings store + printer events
+  queue.ts              → PrintQueue: persistent job queue with background processor
   webhook.ts            → Thin re-export + standalone entry point
   server/               → Modular HTTP server (split from webhook.ts)
     index.ts            → WebhookServer class + startServer() + entry point
@@ -43,6 +53,20 @@ src/
       get-routes.ts     → GET handlers: health, printers, OpenAPI spec, Swagger UI
       post-routes.ts    → POST handlers: text, barcode, QR, raw ZPL, composed label
 dist/                   → Compiled output (gitignored, shipped in npm package)
+web/                    → Nuxt 4 Web UI (separate package)
+  nuxt.config.ts        → Nuxt config (modules: @nuxt/ui, @nuxt/eslint)
+  app/
+    app.config.ts       → NuxtUI color theme (primary: blue)
+    app.vue             → Root layout: UApp + UDashboardGroup + sidebar
+    assets/css/main.css → Tailwind v4 + NuxtUI imports
+    pages/
+      index.vue         → Dashboard: status cards, quick print, system info
+      history.vue       → Print history: filterable job table
+      queue.vue         → Queue: job list + detail panel + event log
+      debug.vue         → Debug: printer, queue, DB, server diagnostics
+      settings.vue      → Settings: label size, API key, queue interval
+    composables/
+      useApi.ts         → API client wrapping $fetch with typed methods
 package.json            → npm metadata, bin entry, scripts
 tsconfig.json           → TypeScript config
 README.md               → Human-readable docs
@@ -53,14 +77,13 @@ AI-MAP.md               → This file
 
 | Action | Command | Notes |
 |--------|---------|-------|
-| Build | `npm run build` | `tsc` |
-| Dev server | `npm run dev` | `tsx watch src/webhook.ts` |
+| Build backend | `npm run build` | `tsc` |
+| Webhook server | `npx tsx src/server/index.ts` | API on :3420 |
+| Nuxt dev | `cd web && npm run dev` | UI on :3000 |
+| Nuxt build | `cd web && npm run build` | Output to web/.output/ |
+| Nuxt preview | `cd web && npm run preview` | Preview production build |
 | Test | `npm run test` | `vitest run` |
-| Test watch | `npm run test:watch` | `vitest` |
-| CLI discover | `npm run discover` | Lists printers |
-| CLI test print | `npm run print:test` | Prints a test label |
 | Global CLI | `zebra-label <cmd>` | After `npm install -g .` |
-| Webhook serve | `npx tsx src/cli.ts serve` | Start API server |
 | Print text | `npx tsx src/cli.ts print-text "Hello"` | Quick text label |
 | Print barcode | `npx tsx src/cli.ts print-bc "DATA" "Label"` | Quick barcode |
 | Print QR | `npx tsx src/cli.ts print-qr "https://..." "Label"` | Quick QR code |
@@ -73,45 +96,46 @@ AI-MAP.md               → This file
 | CLI entry (npm bin) | `src/cli.ts` → `dist/cli.js` |
 | Webhook server | `src/server/index.ts` (WebhookServer class) |
 | Printer connection | `src/printer.ts` (Printer class) |
+| Queue system | `src/queue.ts` (PrintQueue class) |
+| Database | `src/db/database.ts` (getDb singleton) |
+| Job repository | `src/db/print-job-repo.ts` |
+| Settings repository | `src/db/settings-repo.ts` |
 | ZPL builder | `src/zpl.ts` (ZPLBuilder class) |
 | Label templates | `src/label.ts` |
 | API schemas | `src/schemas.ts` |
 | API docs | `src/openapi.ts` |
 | Discovery | `src/discovery.ts` |
 | Type definitions | `src/types.ts` |
+| Web UI app | `web/app/app.vue` |
+| API client | `web/app/composables/useApi.ts` |
+| Nuxt config | `web/nuxt.config.ts` |
 
 ## Architecture
 
 ```
-CLI (cli.ts) ──────────────────────────────────────────────┐
-                                                            │
-Webhook Clients ──→ HTTP (server/index.ts)                  │
-                        │                                   │
-                        ├── handlers/get-routes.ts          │
-                        ├── handlers/post-routes.ts         │
-                        ├── helpers.ts (json, validate)     │
-                        └── router.ts (dispatch)            │
-                              │                             │
-                              ▼                             │
-                        Printer (printer.ts) ←──────────────┘
-                              │
-                              ├── Discovery (discovery.ts) ── CUPS (lpstat)
-                              ├── ZPL (zpl.ts) ── label composition
-                              ├── Templates (label.ts) ── high-level layouts
-                              └── Schemas (schemas.ts) ── Zod validation
-                                     │
-                                     ▼
-                              CUPS `lp` command ──→ Printer USB
+Nuxt Web UI (web/) ──→ HTTP API (server/index.ts)
+                             │
+                             ├── PrintQueue (queue.ts)
+                             │     ├── Immediate print attempt
+                             │     ├── Fallback: persist to SQLite
+                             │     └── Background processor
+                             │
+                             ├── Handlers (server/handlers/)
+                             │     ├── GET: health, jobs, debug, settings
+                             │     └── POST: print operations → queue
+                             │
+                             ├── Printer (printer.ts)
+                             │     └── CUPS lp command → USB printer
+                             │
+                             └── Database (db/)
+                                   ├── print_jobs + job_logs
+                                   ├── settings (key/value)
+                                   └── printer_events
 ```
 
-**Dependency flow**: HTTP handlers → Printer → CUPS. No circular dependencies. Each module has a single responsibility.
-
-**Server internals** (`src/server/`):
-- `helpers.ts` — Pure utility functions (no class state)
-- `router.ts` — Route table types and dispatch logic
-- `handlers/get-routes.ts` — Each GET endpoint is a Handler or factory function
-- `handlers/post-routes.ts` — Each POST endpoint validates → formats → prints → responds
-- `index.ts` — `WebhookServer` ties routes to HTTP server, manages lifecycle
+**Dependency flow**: Nuxt UI → HTTP API → PrintQueue → Printer → CUPS → Device.  
+**Persistence**: All jobs, logs, settings, and events stored in SQLite (WAL mode).  
+**Reliability**: Jobs queue automatically if printer offline; processor retries on reconnect.
 
 ## API Routes
 
@@ -121,6 +145,13 @@ Webhook Clients ──→ HTTP (server/index.ts)                  │
 | GET | `/api/printers` | `printersHandler()` | — |
 | GET | `/api/docs` | `docsHandler` | — |
 | GET | `/api/docs/openapi.json` | `openApiHandler` | — |
+| GET | `/api/jobs` | `jobsListHandler()` | — |
+| GET | `/api/jobs/stats` | `jobsStatsHandler()` | — |
+| GET | `/api/jobs/:id` | `jobDetailHandler()` | — |
+| POST | `/api/jobs/:id/cancel` | `jobCancelHandler()` | — |
+| GET | `/api/debug` | `debugHandler()` | — |
+| GET | `/api/settings` | `settingsGetHandler()` | — |
+| PUT | `/api/settings` | `settingsPutHandler()` | — |
 | POST | `/api/print/text` | `printTextHandler()` | `textLabelSchema` |
 | POST | `/api/print/barcode` | `printBarcodeHandler()` | `barcodeLabelSchema` |
 | POST | `/api/print/qr` | `printQrHandler()` | `qrLabelSchema` |
