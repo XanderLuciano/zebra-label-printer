@@ -117,21 +117,68 @@ itemLabel('Widget Pro', '$29.99', 'SKU-12345').build();
 
 ### Webhook API
 
-```
-POST /api/print/text      { "lines": ["Line 1", "Line 2"] }
-POST /api/print/barcode   { "data": "BARCODE123", "text": "Optional label" }
-POST /api/print/qr        { "data": "https://...", "text": "Optional label" }
-POST /api/print/zpl       Raw ZPL string or { "zpl": "..." }
-GET  /api/printers        List available printers
-GET  /api/health          Health check
-```
+All endpoints accept JSON. All POST bodies are validated with [Zod](https://zod.dev) — invalid requests get structured 400s with field-level error details.
 
-Example:
+For full interactive docs, start the server and open **http://localhost:3420/api/docs** (Swagger UI).
+
+| Method | Endpoint | Description |
+|--------|----------|-------------|
+| GET | `/api/health` | Health check |
+| GET | `/api/printers` | List available printers |
+| GET | `/api/docs` | Swagger UI (interactive docs) |
+| GET | `/api/docs/openapi.json` | OpenAPI 3.1 spec |
+| POST | `/api/print/text` | Print text label |
+| POST | `/api/print/barcode` | Print barcode label |
+| POST | `/api/print/qr` | Print QR code label |
+| POST | `/api/print/zpl` | Print raw ZPL (text/plain or JSON) |
+| POST | `/api/print/label` | Print composed label from elements |
+
+**Examples:**
+
 ```bash
+# Text label
 curl -X POST http://localhost:3420/api/print/text \
   -H "Content-Type: application/json" \
-  -d '{"lines": ["Living Room", "Box #3", "Misc Cables"]}'
+  -d '{"lines": ["Living Room", "Box #3"]}'
+
+# Barcode
+curl -X POST http://localhost:3420/api/print/barcode \
+  -H "Content-Type: application/json" \
+  -d '{"data": "INV-42069", "text": "Inventory Tag"}'
+
+# Raw ZPL (direct string)
+curl -X POST http://localhost:3420/api/print/zpl \
+  -H "Content-Type: text/plain" \
+  -d '^XA
+^FO50,50^A0N,40,40^FDHello^FS
+^XZ'
+
+# Validation errors return structured details:
+curl -X POST http://localhost:3420/api/print/text \
+  -H "Content-Type: application/json" \
+  -d '{"lines": []}'
+# → { "error": "Validation failed", "details": [{ "field": "lines", "message": "At least one line required" }] }
 ```
+
+**API Key auth:** Set `ZEBRA_API_KEY` env var, then use `Authorization: Bearer <key>` header or `?key=<key>` query param.
+
+### Network Setup
+
+1. Start the server on the machine connected to the printer:
+   ```bash
+   npx tsx src/cli.ts serve
+   ```
+2. Any device on the same network can print:
+   ```bash
+   curl -X POST http://nuc.local:3420/api/print/text \
+     -H "Content-Type: application/json" \
+     -d '{"lines": ["Hello from my laptop!"]}'
+   ```
+3. For PM2 (auto-start on boot):
+   ```bash
+   pm2 start npx --name zebra-label -- tsx src/webhook.ts
+   pm2 save
+   ```
 
 ## Environment Variables
 

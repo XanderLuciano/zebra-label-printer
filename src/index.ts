@@ -55,6 +55,24 @@ export {
   customLabel,
 } from './label';
 
+// Validation schemas
+export {
+  textLabelSchema,
+  barcodeLabelSchema,
+  qrLabelSchema,
+  zplSchema,
+  labelSchema,
+} from './schemas';
+export type {
+  TextLabelRequest,
+  BarcodeLabelRequest,
+  QRLabelRequest,
+  LabelRequest,
+} from './schemas';
+
+// OpenAPI spec (for custom docs integration)
+export { OPENAPI_SPEC, swaggerUiHtml } from './openapi';
+
 // Types
 export type {
   PrinterInfo,

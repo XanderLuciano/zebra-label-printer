@@ -12,7 +12,13 @@
     "print:test": "tsx src/cli.ts print-test",
     "discover": "tsx src/cli.ts discover"
   },
-  "keywords": ["zebra", "label-printer", "gk420d", "zpl", "barcode"],
+  "keywords": [
+    "zebra",
+    "label-printer",
+    "gk420d",
+    "zpl",
+    "barcode"
+  ],
   "license": "MIT",
   "devDependencies": {
     "@types/node": "^22.0.0",
@@ -22,5 +28,8 @@
   },
   "engines": {
     "node": ">=18"
+  },
+  "dependencies": {
+    "zod": "^4.3.6"
   }
 }
