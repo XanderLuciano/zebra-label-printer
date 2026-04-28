@@ -1,0 +1,26 @@
+{
+  "name": "zebra-label-printer",
+  "version": "0.1.0",
+  "description": "Library for connecting to and printing labels on Zebra GK420d label printers, with webhook support",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx watch src/webhook.ts",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "print:test": "tsx src/cli.ts print-test",
+    "discover": "tsx src/cli.ts discover"
+  },
+  "keywords": ["zebra", "label-printer", "gk420d", "zpl", "barcode"],
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^22.0.0",
+    "tsx": "^4.0.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=18"
+  }
+}
