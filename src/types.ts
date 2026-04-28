@@ -124,6 +124,8 @@ export interface WebhookConfig {
   host?: string;
   apiKey?: string;
   defaultPrinter?: string;
+  /** Raw TCP passthrough port (default: 9100, set to 0 to disable) */
+  tcpPort?: number;
 }
 
 /** Label size configuration */

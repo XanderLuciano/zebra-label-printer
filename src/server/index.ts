@@ -13,6 +13,7 @@ import { createReadStream, existsSync, statSync } from 'fs'
 import { join, extname } from 'path'
 import { Printer } from '../printer'
 import { PrintQueue } from '../queue'
+import { startRawTcpServer } from '../raw-tcp'
 import { json } from './helpers'
 import type { RouteTable, Handler } from './router'
 import { findHandler, sendNotFound, printRoutes } from './router'
@@ -62,7 +63,8 @@ export class WebhookServer {
       port: config.port ?? 3420,
       host: config.host ?? '0.0.0.0',
       apiKey: config.apiKey ?? '',
-      defaultPrinter: config.defaultPrinter ?? ''
+      defaultPrinter: config.defaultPrinter ?? '',
+      tcpPort: config.tcpPort ?? 9100
     }
     this.routes = new Map() // Built in start()
   }
@@ -216,7 +218,7 @@ export class WebhookServer {
   }
 
   /**
-   * Connect to a printer, initialize the queue, and start the HTTP server.
+   * Connect to a printer, initialize the queue, and start the HTTP + TCP servers.
    */
   async start(printer?: Printer, printerName?: string): Promise<Printer> {
     if (printer) {
@@ -256,6 +258,19 @@ export class WebhookServer {
         console.log(`   Docs:    http://${addr}:${this.config.port}/api/docs\n`)
         printRoutes(this.routes)
         console.log()
+
+        // Start raw TCP passthrough (Zebra network protocol, default port 9100)
+        const tcpPort = this.config.tcpPort ?? parseInt(process.env.ZEBRA_TCP_PORT || '9100', 10)
+        if (tcpPort > 0) {
+          const tcpHost = this.config.host
+          try {
+            const tcpServer = startRawTcpServer(tcpPort, tcpHost, () => this.queue, this.printer!)
+            ;(this as any).tcpServer = tcpServer
+          } catch (err) {
+            console.error(`   \u26a0 Failed to start raw TCP on port ${tcpPort}: ${(err as Error).message}`)
+          }
+        }
+
         resolve(this.printer!)
       })
 
@@ -341,6 +356,14 @@ export class WebhookServer {
       clearInterval(this.updateTimer)
       this.updateTimer = null
     }
+    // Stop raw TCP server
+    const tcpServer = (this as any).tcpServer as import('net').Server | undefined
+    if (tcpServer) {
+      tcpServer.close(() => {
+        console.log('  Raw TCP server stopped')
+      })
+    }
+
     if (this.queue) {
       this.queue.stop()
       this.queue = null

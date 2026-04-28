@@ -147,12 +147,13 @@ Commands:
   print-text <text>              Print a simple text label
   print-bc <data> [text]         Print a barcode label
   print-qr <data> [text]         Print a QR code label
-  serve [printer]           Start the webhook server
+  serve [printer]           Start the webhook + raw TCP (9100) server
 
 Environment:
   ZEBRA_PRINTER             Default printer name
   ZEBRA_API_KEY             API key for webhook auth
   PORT                      Webhook server port (default: 3420)
+  ZEBRA_TCP_PORT            Raw TCP passthrough port (default: 9100, 0 to disable)
 `)
       break
     }
