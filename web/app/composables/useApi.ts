@@ -69,5 +69,19 @@ export function useApi() {
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(data),
     }),
+
+    // Label size
+    getLabelSize: () => get<{
+      current: { widthInches: number; heightInches: number; widthDots: number; heightDots: number; name: string };
+      recents: Array<{ widthInches: number; heightInches: number; widthDots: number; heightDots: number; name: string }>;
+      standards: Array<{ widthInches: number; heightInches: number; widthDots: number; heightDots: number; name: string }>;
+      dpi: number;
+    }>('/api/label-size'),
+    setLabelSize: (size: { widthDots: number; heightDots: number; name: string }) =>
+      $fetch(`${base}/api/label-size`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(size),
+      }),
   };
 }

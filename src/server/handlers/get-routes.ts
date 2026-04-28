@@ -6,7 +6,7 @@ import type { Handler } from '../router';
 import { json, html, checkAuth } from '../helpers';
 import { OPENAPI_SPEC, swaggerUiHtml } from '../../openapi';
 import { listJobs, getJob, getJobLogs, getJobStats, countPendingJobs } from '../../db/print-job-repo';
-import { getAllSettings, getPrinterEvents } from '../../db/settings-repo';
+import { getAllSettings, getPrinterEvents, getLabelSize, getRecentSizes, setLabelSize, STANDARD_SIZES } from '../../db/settings-repo';
 import { getDb } from '../../db/database';
 import type { PrintQueue } from '../../queue';
 
@@ -175,5 +175,60 @@ export function settingsPutHandler(apiKey: string): Handler {
     }
 
     json(res, { success: true });
+  };
+}
+
+// ─── Label Size ─────────────────────────────────────────────────────────────
+
+/** GET /api/label-size — current label dimensions */
+export function labelSizeGetHandler(apiKey: string): Handler {
+  return async (req, res, _printer) => {
+    if (!checkAuth(req, res, apiKey)) return;
+
+    const current = getLabelSize();
+    const recents = getRecentSizes();
+    const standards = STANDARD_SIZES;
+
+    json(res, {
+      current,
+      recents,
+      standards,
+      dpi: 203,
+    });
+  };
+}
+
+/** PUT /api/label-size — set label dimensions */
+export function labelSizePutHandler(apiKey: string): Handler {
+  return async (req, res, _printer) => {
+    if (!checkAuth(req, res, apiKey)) return;
+
+    const { readBody: rb, parseJson } = await import('../helpers');
+
+    const raw = await rb(req);
+    const data = parseJson(raw) as Record<string, unknown> | null;
+    if (!data || typeof data !== 'object') {
+      json(res, { error: 'Expected JSON object with widthDots and heightDots' }, 400);
+      return;
+    }
+
+    const widthDots = Number(data.widthDots);
+    const heightDots = Number(data.heightDots);
+
+    if (!widthDots || !heightDots || widthDots < 100 || heightDots < 50) {
+      json(res, { error: 'widthDots and heightDots required (min 100×50 dots)' }, 400);
+      return;
+    }
+
+    const size = {
+      widthInches: Number((widthDots / 203).toFixed(2)),
+      heightInches: Number((heightDots / 203).toFixed(2)),
+      widthDots,
+      heightDots,
+      name: data.name as string || `${(widthDots / 203).toFixed(1)}×${(heightDots / 203).toFixed(1)}"`,
+    };
+
+    setLabelSize(size);
+    json(res, { success: true, size });
   };
 }

@@ -1,20 +1,25 @@
 <script setup lang="ts">
 const api = useApi();
 
-const { data: settings, refresh } = useAsyncData('settings', () => api.getSettings());
+const { data: settings, refresh: refreshSettings } = useAsyncData('settings', () => api.getSettings());
+const { data: labelSize, refresh: refreshLabelSize } = useAsyncData('label-size', () =>
+  $fetch<{
+    current: { widthInches: number; heightInches: number; widthDots: number; heightDots: number; name: string };
+    recents: Array<{ widthInches: number; heightInches: number; widthDots: number; heightDots: number; name: string }>;
+    standards: Array<{ widthInches: number; heightInches: number; widthDots: number; heightDots: number; name: string }>;
+    dpi: number;
+  }>(`${useRuntimeConfig().public.apiBase}/api/label-size`),
+);
 
+// Settings form
 const form = reactive({
-  apiKey: settings.value?.['api_key'] || '',
-  defaultLabelWidth: settings.value?.['default_label_width'] || '3',
-  defaultLabelHeight: settings.value?.['default_label_height'] || '5',
-  queueCheckIntervalMs: settings.value?.['queue_check_interval_ms'] || '5000',
+  apiKey: '',
+  queueCheckIntervalMs: '5000',
 });
 
 watchEffect(() => {
   if (settings.value) {
     form.apiKey = settings.value['api_key'] || '';
-    form.defaultLabelWidth = settings.value['default_label_width'] || '3';
-    form.defaultLabelHeight = settings.value['default_label_height'] || '5';
     form.queueCheckIntervalMs = settings.value['queue_check_interval_ms'] || '5000';
   }
 });
@@ -28,16 +33,55 @@ async function save() {
   try {
     await api.updateSettings({
       api_key: form.apiKey,
-      default_label_width: form.defaultLabelWidth,
-      default_label_height: form.defaultLabelHeight,
       queue_check_interval_ms: form.queueCheckIntervalMs,
     });
     saved.value = true;
-    refresh();
+    refreshSettings();
     setTimeout(() => { saved.value = false; }, 2000);
   } finally {
     saving.value = false;
   }
+}
+
+// Label size
+const selectedSize = ref<string>('');
+const customWidth = ref('');
+const customHeight = ref('');
+const sizeSaving = ref(false);
+
+watchEffect(() => {
+  if (labelSize.value?.current) {
+    selectedSize.value = `${labelSize.value.current.widthDots}x${labelSize.value.current.heightDots}`;
+  }
+});
+
+async function setSize(size: { widthDots: number; heightDots: number; name: string }) {
+  sizeSaving.value = true;
+  try {
+    await $fetch(`${useRuntimeConfig().public.apiBase}/api/label-size`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(size),
+    });
+    refreshLabelSize();
+  } finally {
+    sizeSaving.value = false;
+  }
+}
+
+async function setCustomSize() {
+  const w = parseInt(customWidth.value);
+  const h = parseInt(customHeight.value);
+  if (!w || !h || w < 1 || h < 1) return;
+
+  await setSize({
+    widthDots: Math.round(w * (labelSize.value?.dpi ?? 203)),
+    heightDots: Math.round(h * (labelSize.value?.dpi ?? 203)),
+    name: `${w}×${h}" (custom)`,
+  });
+
+  customWidth.value = '';
+  customHeight.value = '';
 }
 </script>
 
@@ -54,70 +98,111 @@ async function save() {
       />
     </div>
 
+    <!-- Label Size -->
     <UCard>
       <template #header>
-        <span class="font-medium">Printer Configuration</span>
+        <div class="flex items-center gap-2">
+          <UIcon name="i-lucide-ruler" />
+          <span class="font-medium">Label Size</span>
+          <UBadge v-if="labelSize?.current" variant="subtle" color="primary" size="xs">
+            {{ labelSize.current.name }}
+          </UBadge>
+        </div>
       </template>
+
       <div class="space-y-4 max-w-lg">
-        <UFormGroup label="Default Label Width (inches)">
-          <USelect
-            v-model="form.defaultLabelWidth"
-            :items="[
-              { label: '2 inch', value: '2' },
-              { label: '3 inch', value: '3' },
-              { label: '4 inch', value: '4' },
-            ]"
-          />
-        </UFormGroup>
+        <p class="text-sm text-gray-500">Select a standard size or enter custom dimensions.</p>
 
-        <UFormGroup label="Default Label Height (inches)">
-          <USelect
-            v-model="form.defaultLabelHeight"
-            :items="[
-              { label: '1 inch', value: '1' },
-              { label: '2 inch', value: '2' },
-              { label: '3 inch', value: '3' },
-              { label: '5 inch', value: '5' },
-            ]"
+        <!-- Recent & Standard sizes -->
+        <div class="flex flex-wrap gap-2">
+          <UButton
+            v-for="size in labelSize?.recents ?? []"
+            :key="`${size.widthDots}x${size.heightDots}`"
+            :label="size.name"
+            :variant="selectedSize === `${size.widthDots}x${size.heightDots}` ? 'solid' : 'outline'"
+            :color="selectedSize === `${size.widthDots}x${size.heightDots}` ? 'primary' : 'gray'"
+            size="sm"
+            :loading="sizeSaving && selectedSize === `${size.widthDots}x${size.heightDots}`"
+            @click="setSize(size)"
           />
-        </UFormGroup>
+        </div>
 
-        <UFormGroup label="Queue Check Interval (ms)">
+        <!-- Custom size -->
+        <div class="flex items-end gap-3 pt-2 border-t">
+          <UFormGroup label="Width (inches)">
+            <UInput v-model="customWidth" type="number" placeholder="3" size="sm" class="w-24" min="1" max="12" />
+          </UFormGroup>
+          <span class="text-xl text-gray-400 pb-1">×</span>
+          <UFormGroup label="Height (inches)">
+            <UInput v-model="customHeight" type="number" placeholder="5" size="sm" class="w-24" min="1" max="12" />
+          </UFormGroup>
+          <UButton
+            label="Apply"
+            icon="i-lucide-check"
+            size="sm"
+            color="primary"
+            :disabled="!customWidth || !customHeight"
+            @click="setCustomSize"
+          />
+        </div>
+      </div>
+    </UCard>
+
+    <!-- Queue -->
+    <UCard>
+      <template #header>
+        <div class="flex items-center gap-2">
+          <UIcon name="i-lucide-timer" />
+          <span class="font-medium">Queue</span>
+        </div>
+      </template>
+      <div class="max-w-lg">
+        <UFormGroup label="Check Interval (ms)">
           <UInput v-model="form.queueCheckIntervalMs" type="number" />
           <template #help>
-            How often the queue processor checks for new jobs and printer availability.
+            How often the queue processor polls for printer availability and pending jobs.
           </template>
         </UFormGroup>
       </div>
     </UCard>
 
+    <!-- Security -->
     <UCard>
       <template #header>
-        <span class="font-medium">Security</span>
+        <div class="flex items-center gap-2">
+          <UIcon name="i-lucide-shield" />
+          <span class="font-medium">Security</span>
+        </div>
       </template>
-      <div class="max-w-lg space-y-4">
+      <div class="max-w-lg">
         <UFormGroup label="API Key">
           <UInput v-model="form.apiKey" type="password" placeholder="Leave empty for no auth" />
         </UFormGroup>
       </div>
     </UCard>
 
+    <!-- API Docs -->
     <UCard>
       <template #header>
-        <span class="font-medium">API Documentation</span>
+        <div class="flex items-center gap-2">
+          <UIcon name="i-lucide-book-open" />
+          <span class="font-medium">API Documentation</span>
+        </div>
       </template>
       <p class="text-sm text-gray-500 mb-3">
-        Interactive API docs with request/response examples for every endpoint.
+        Interactive OpenAPI docs with request/response examples for every endpoint.
       </p>
       <UButton
         label="Open API Docs"
         icon="i-lucide-external-link"
         variant="outline"
-        @click="window.open('http://localhost:3420/api/docs', '_blank')"
+        :to="`${useRuntimeConfig().public.apiBase}/api/docs`"
+        target="_blank"
       />
     </UCard>
 
-    <div v-if="saved" class="fixed bottom-6 right-6">
+    <!-- Toast -->
+    <div v-if="saved" class="fixed bottom-6 right-6 z-50">
       <UAlert
         title="Settings saved"
         color="green"

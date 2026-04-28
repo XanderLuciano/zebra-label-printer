@@ -1,0 +1,19 @@
+services:
+  zebra-label:
+    build: .
+    container_name: zebra-label-printer
+    restart: unless-stopped
+    ports:
+      - "3420:3420"
+    volumes:
+      # CUPS socket (for lp/lpstat)
+      - /var/run/cups/cups.sock:/var/run/cups/cups.sock
+      # Persistent data (SQLite DB, settings)
+      - ./data:/app/data
+    environment:
+      - ZEBRA_PRINTER=
+      - ZEBRA_API_KEY=
+      - ZEBRA_DB_PATH=/app/data/zebra-label-printer.db
+    # USB passthrough (alternative to CUPS socket)
+    # devices:
+    #   - /dev/bus/usb:/dev/bus/usb

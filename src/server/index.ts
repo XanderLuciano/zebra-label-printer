@@ -25,6 +25,8 @@ import {
   debugHandler,
   settingsGetHandler,
   settingsPutHandler,
+  labelSizeGetHandler,
+  labelSizePutHandler,
 } from './handlers/get-routes';
 import {
   printTextHandler,
@@ -80,6 +82,9 @@ export class WebhookServer {
     // Settings
     get.set('/api/settings', settingsGetHandler(apiKey));
 
+    // Label size
+    get.set('/api/label-size', labelSizeGetHandler(apiKey));
+
     table.set('GET', get);
 
     // ── POST routes ─────────────────────────────────────────────────────────
@@ -99,6 +104,7 @@ export class WebhookServer {
     // ── PUT routes ──────────────────────────────────────────────────────────
     const put = new Map<string, Handler>();
     put.set('/api/settings', settingsPutHandler(apiKey));
+    put.set('/api/label-size', labelSizePutHandler(apiKey));
     table.set('PUT', put);
 
     return table;

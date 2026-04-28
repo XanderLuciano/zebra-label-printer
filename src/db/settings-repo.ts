@@ -103,3 +103,62 @@ export function getPrinterEvents(limit = 50): PrinterEvent[] {
     .prepare('SELECT * FROM printer_events ORDER BY created_at DESC LIMIT ?')
     .all(limit) as PrinterEvent[];
 }
+
+// ─── Label size management ───────────────────────────────────────────────────
+
+import type { LabelSize } from '../types';
+
+/** Predefined label sizes (inches → dots at 203 DPI) */
+export const STANDARD_SIZES: LabelSize[] = [
+  { widthInches: 2, heightInches: 1, widthDots: 406, heightDots: 203, name: '2×1" (small)' },
+  { widthInches: 3, heightInches: 1, widthDots: 609, heightDots: 203, name: '3×1" (narrow)' },
+  { widthInches: 3, heightInches: 2, widthDots: 609, heightDots: 406, name: '3×2" (standard)' },
+  { widthInches: 3, heightInches: 5, widthDots: 609, heightDots: 1015, name: '3×5" (large)' },
+  { widthInches: 4, heightInches: 6, widthDots: 812, heightDots: 1218, name: '4×6" (shipping)' },
+  { widthInches: 4, heightInches: 2, widthDots: 812, heightDots: 406, name: '4×2" (wide)' },
+];
+
+/** Get the current label size */
+export function getLabelSize(): LabelSize {
+  const saved = getJsonSetting<LabelSize | null>('label_size', null);
+  if (saved) return saved;
+
+  // Default: 3×5"
+  return STANDARD_SIZES[3];
+}
+
+/** Set the current label size */
+export function setLabelSize(size: LabelSize): void {
+  setSetting('label_size', size);
+  addRecentSize(size);
+}
+
+/** Get recently used label sizes */
+export function getRecentSizes(): LabelSize[] {
+  const recents = getJsonSetting<LabelSize[]>('recent_label_sizes', []);
+  // Merge with standard sizes, deduplicate by dimensions
+  const seen = new Set<string>();
+  const merged: LabelSize[] = [];
+
+  for (const s of [...recents, ...STANDARD_SIZES]) {
+    const key = `${s.widthDots}x${s.heightDots}`;
+    if (!seen.has(key)) {
+      seen.add(key);
+      merged.push(s);
+    }
+  }
+
+  return merged;
+}
+
+/** Add a size to recent list */
+function addRecentSize(size: LabelSize): void {
+  const recents = getJsonSetting<LabelSize[]>('recent_label_sizes', []);
+  const key = `${size.widthDots}x${size.heightDots}`;
+
+  // Remove duplicate if exists
+  const filtered = recents.filter(s => `${s.widthDots}x${s.heightDots}` !== key);
+  // Add to front, keep last 10
+  filtered.unshift(size);
+  setSetting('recent_label_sizes', filtered.slice(0, 10));
+}

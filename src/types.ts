@@ -125,3 +125,17 @@ export interface WebhookConfig {
   apiKey?: string;
   defaultPrinter?: string;
 }
+
+/** Label size configuration */
+export interface LabelSize {
+  /** Width in inches */
+  widthInches: number;
+  /** Height in inches */
+  heightInches: number;
+  /** Width in dots (at 203 DPI) */
+  widthDots: number;
+  /** Height in dots (at 203 DPI) */
+  heightDots: number;
+  /** Human-readable name */
+  name: string;
+}

@@ -87,4 +87,5 @@ export type {
   DiscoveryOptions,
   WebhookConfig,
   BarcodeType,
+  LabelSize,
 } from './types';
