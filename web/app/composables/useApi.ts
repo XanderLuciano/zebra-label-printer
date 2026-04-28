@@ -83,5 +83,19 @@ export function useApi() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(size),
       }),
+
+    // Updates
+    getVersion: () => get<{
+      current: string;
+      latest: string | null;
+      updateAvailable: boolean;
+      checkedAt: string | null;
+      error: string | null;
+      releaseUrl: string | null;
+    }>("/api/version"),
+    checkForUpdates: () =>
+      post<{ current: string; latest: string | null; updateAvailable: boolean; releaseUrl: string | null }>("/api/update/check"),
+    installUpdate: () =>
+      post<{ success: boolean; message: string }>("/api/update/install"),
   };
 }

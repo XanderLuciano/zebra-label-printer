@@ -7,6 +7,7 @@ import { json, html, checkAuth } from '../helpers'
 import { OPENAPI_SPEC, swaggerUiHtml } from '../../openapi'
 import { listJobs, getJob, getJobLogs, getJobStats, countPendingJobs } from '../../db/print-job-repo'
 import { getAllSettings, getPrinterEvents, getLabelSize, getRecentSizes, setLabelSize, STANDARD_SIZES } from '../../db/settings-repo'
+import { checkForUpdates } from '../../updater'
 import { getDb } from '../../db/database'
 import type { PrintQueue } from '../../queue'
 
@@ -231,5 +232,62 @@ export function labelSizePutHandler(apiKey: string): Handler {
 
     setLabelSize(size)
     json(res, { success: true, size })
+  }
+}
+
+// ─── Updates ────────────────────────────────────────────────────────────────
+
+/** GET /api/version — current and latest version info */
+export function versionHandler(apiKey: string): Handler {
+  return async (req, res, _printer) => {
+    if (!checkAuth(req, res, apiKey)) return
+    const info = await checkForUpdates(60)
+    json(res, info)
+  }
+}
+
+/** POST /api/update/check — force an update check (bypasses cache) */
+export function updateCheckHandler(apiKey: string): Handler {
+  return async (req, res, _printer) => {
+    if (!checkAuth(req, res, apiKey)) return
+    const info = await checkForUpdates(0) // bypass cache
+    json(res, info)
+  }
+}
+
+/** POST /api/update/install — trigger update installation */
+export function updateInstallHandler(apiKey: string): Handler {
+  return async (_req, res, _printer) => {
+    if (!checkAuth(_req, res, apiKey)) return
+
+    const { exec } = await import('child_process')
+    const { promisify } = await import('util')
+    const execP = promisify(exec)
+
+    try {
+      // git pull
+      const pull = await execP('git pull origin main', { timeout: 30000, cwd: process.cwd() })
+
+      // npm install (production only)
+      const install = await execP('npm ci --omit=dev', { timeout: 60000, cwd: process.cwd() })
+
+      // rebuild
+      const build = await execP('npm run build', { timeout: 30000, cwd: process.cwd() })
+
+      json(res, {
+        success: true,
+        message: 'Update installed. Restart the server to apply changes.',
+        details: {
+          pull: pull.stdout.trim(),
+          install: install.stderr.slice(-200),
+          build: build.stderr.slice(-200)
+        }
+      })
+    } catch (err) {
+      json(res, {
+        success: false,
+        error: `Update failed: ${(err as Error).message}`
+      }, 500)
+    }
   }
 }

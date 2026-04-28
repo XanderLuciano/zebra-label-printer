@@ -29,7 +29,10 @@ import {
   settingsGetHandler,
   settingsPutHandler,
   labelSizeGetHandler,
-  labelSizePutHandler
+  labelSizePutHandler,
+  versionHandler,
+  updateCheckHandler,
+  updateInstallHandler
 } from './handlers/get-routes'
 import {
   printTextHandler,
@@ -41,6 +44,7 @@ import {
   clearJobsHandler
 } from './handlers/post-routes'
 import { closeDb } from '../db/database'
+import { checkForUpdates } from '../updater'
 import type { WebhookConfig } from '../types'
 
 // ─── Server ──────────────────────────────────────────────────────────────────
@@ -51,6 +55,7 @@ export class WebhookServer {
   private queue: PrintQueue | null = null
   private config: Required<WebhookConfig>
   private routes: RouteTable
+  private updateTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(config: WebhookConfig = {}) {
     this.config = {
@@ -89,6 +94,7 @@ export class WebhookServer {
 
     // Label size
     get.set('/api/label-size', labelSizeGetHandler(apiKey))
+    get.set('/api/version', versionHandler(apiKey))
 
     table.set('GET', get)
 
@@ -105,6 +111,8 @@ export class WebhookServer {
     // Job actions
     post.set('/api/jobs/cancel', jobCancelHandler(apiKey, getQueue))
     post.set('/api/jobs/clear', clearJobsHandler(apiKey))
+    post.set('/api/update/check', updateCheckHandler(apiKey))
+    post.set('/api/update/install', updateInstallHandler(apiKey))
 
     table.set('POST', post)
 
@@ -226,6 +234,9 @@ export class WebhookServer {
     this.queue = new PrintQueue(this.printer)
     this.queue.start()
 
+    // Start periodic update check (once per day)
+    this.startUpdateCheck()
+
     return new Promise((resolve, reject) => {
       this.httpServer = createServer((req, res) => {
         this.handleRequest(req, res).catch(err => {
@@ -307,8 +318,29 @@ export class WebhookServer {
     }
   }
 
+  /** Start periodic update check (once every 24 hours) */
+  private async startUpdateCheck(): Promise<void> {
+    const { getBoolSetting } = await import('../db/settings-repo')
+    if (!getBoolSetting('auto_update_check', true)) {
+      return
+    }
+
+    this.updateTimer = setInterval(() => {
+      checkForUpdates(0).catch(() => { /* silent */ })
+    }, 24 * 60 * 60 * 1000)
+
+    // Run an initial check after 30s
+    setTimeout(() => {
+      checkForUpdates(0).catch(() => { /* silent */ })
+    }, 30000)
+  }
+
   /** Stop the HTTP server, queue processor, and close the database. */
   async stop(): Promise<void> {
+    if (this.updateTimer) {
+      clearInterval(this.updateTimer)
+      this.updateTimer = null
+    }
     if (this.queue) {
       this.queue.stop()
       this.queue = null

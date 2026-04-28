@@ -11,6 +11,28 @@ const { data: labelSize, refresh: refreshLabelSize } = useAsyncData('label-size'
   }>(`${useRuntimeConfig().public.apiBase}/api/label-size`),
 );
 
+
+// Version / updates
+const { data: version, refresh: refreshVersion } = useAsyncData("version", () => api.getVersion());
+const checking = ref(false);
+const updateError = ref("");
+
+const autoUpdate = computed(() => {
+  return (settings.value?.["auto_update_check"] ?? "true") === "true";
+});
+
+async function manualCheck() {
+  checking.value = true;
+  updateError.value = "";
+  try {
+    await api.checkForUpdates();
+    await refreshVersion();
+  } catch (err: any) {
+    updateError.value = err.message || "Check failed";
+  } finally {
+    checking.value = false;
+  }
+}
 // Settings form
 const form = reactive({
   apiKey: '',
@@ -199,6 +221,62 @@ async function setCustomSize() {
         :to="`${useRuntimeConfig().public.apiBase}/api/docs`"
         target="_blank"
       />
+    </UCard>
+
+    <!-- Updates -->
+    <UCard>
+      <template #header>
+        <div class="flex items-center gap-2">
+          <UIcon name="i-lucide-refresh-cw" />
+          <span class="font-medium">Updates</span>
+          <UBadge v-if="version?.updateAvailable" variant="subtle" color="amber" size="xs">
+            v{{ version.latest }} available
+          </UBadge>
+          <UBadge v-else-if="version?.latest" variant="subtle" color="green" size="xs">
+            Up to date
+          </UBadge>
+        </div>
+      </template>
+
+      <div class="space-y-3 max-w-lg">
+        <div class="grid grid-cols-2 gap-3 text-sm">
+          <div>
+            <span class="text-gray-500">Current</span>
+            <p class="font-medium">v{{ version?.current || '...' }}</p>
+          </div>
+          <div>
+            <span class="text-gray-500">Latest</span>
+            <p class="font-medium">{{ version?.latest ? `v${version.latest}` : '...' }}</p>
+          </div>
+        </div>
+
+        <div class="flex flex-wrap gap-2">
+          <UButton
+            label="Check for Updates"
+            icon="i-lucide-search"
+            variant="outline"
+            size="sm"
+            :loading="checking"
+            @click="manualCheck"
+          />
+          <UButton
+            v-if="version?.updateAvailable && version?.releaseUrl"
+            label="View Release"
+            icon="i-lucide-external-link"
+            variant="outline"
+            size="sm"
+            :to="version.releaseUrl"
+            target="_blank"
+          />
+        </div>
+
+        <p class="text-xs text-gray-500">
+          Auto-check: {{ autoUpdate ? 'Daily' : 'Disabled' }} &middot;
+          Last checked: {{ version?.checkedAt ? new Date(version.checkedAt).toLocaleString() : 'Never' }}
+        </p>
+
+        <div v-if="updateError" class="text-sm text-red-500">{{ updateError }}</div>
+      </div>
     </UCard>
 
     <!-- Toast -->
