@@ -120,7 +120,7 @@ export class ZPLBuilder {
 
     const font = options.font ?? '0'
     const height = options.height ?? FONTS.ZERO.height
-    const width = options.width ?? FONTS.ZERO.width
+    const width = options.width ?? (options.height ? Math.round(options.height * 0.8) : FONTS.ZERO.width)
 
     let field = `^FO${options.x},${options.y}`
     field += `^A${font}${options.rotation ?? 'N'},${height},${width}`

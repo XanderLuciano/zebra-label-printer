@@ -123,6 +123,142 @@ curl -X POST http://localhost:3420/api/print/text \
 # → { "error": "Validation failed", "details": [{ "field": "lines", "message": "At least one line required" }] }
 ```
 
+### POST `/api/print/text`
+
+Print a multi-line text label.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `lines` | `string[]` | Yes | — | 1–20 lines of text |
+| `copies` | `integer` | No | `1` | Number of copies (1–10) |
+
+### POST `/api/print/barcode`
+
+Print a standalone barcode label.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `data` | `string` | Yes | — | Barcode data to encode |
+| `type` | `string` | No | `CODE128` | Barcode type (see supported types below) |
+| `text` | `string` | No | — | Optional text printed below the barcode |
+| `height` | `integer` | No | `100` | Barcode height in dots (10–1000) |
+
+### POST `/api/print/qr`
+
+Print a QR code label.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `data` | `string` | Yes | — | Data to encode in QR code |
+| `text` | `string` | No | — | Optional text printed below the QR code |
+| `magnification` | `integer` | No | `5` | QR module size (1–10) |
+
+### POST `/api/print/zpl`
+
+Print raw ZPL commands. Accepts either `text/plain` body (raw ZPL string) or JSON:
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `zpl` | `string` | Yes | — | Raw ZPL commands |
+
+### POST `/api/print/label`
+
+Print a composed label from element definitions. Uses the configured label size from settings for print width/height.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `elements` | `array` | Yes | — | Array of label elements (min 1) |
+| `copies` | `integer` | No | `1` | Number of copies (1–10) |
+
+Each element has a `type` discriminator. Supported element types:
+
+#### Element: `text`
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `type` | `"text"` | Yes | — | Element type |
+| `content` | `string` | Yes | — | Text to print |
+| `options.x` | `integer` | Yes | — | X position in dots |
+| `options.y` | `integer` | Yes | — | Y position in dots |
+| `options.font` | `string` | No | `"0"` | Zebra font ID |
+| `options.height` | `integer` | No | `24` | Font height in dots |
+| `options.width` | `integer` | No | `height × 0.8` | Font width in dots (auto-derived from height for proportional text) |
+| `options.rotation` | `string` | No | `"N"` | Rotation: `N` (normal), `R` (90°), `I` (180°), `B` (270°) |
+| `options.reverse` | `boolean` | No | `false` | Reverse print (white on black) |
+
+#### Element: `barcode`
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `type` | `"barcode"` | Yes | — | Element type |
+| `content` | `string` | Yes | — | Data to encode |
+| `options.x` | `integer` | Yes | — | X position in dots |
+| `options.y` | `integer` | Yes | — | Y position in dots |
+| `options.type` | `string` | **Yes** | — | Barcode type (see table below) |
+| `options.height` | `integer` | No | `50` | Barcode height in dots |
+| `options.narrowBarWidth` | `integer` | No | `2` | Narrow bar width (1–10) |
+| `options.wideBarRatio` | `number` | No | `2.0` | Wide-to-narrow ratio (2.0–3.0) |
+| `options.humanReadable` | `boolean` | No | `true` | Print human-readable text below barcode |
+| `options.humanReadablePosition` | `string` | No | `"Y"` | `Y` = below, `N` = hidden |
+| `options.rotation` | `string` | No | `"N"` | Rotation: `N`, `R`, `I`, `B` |
+
+#### Element: `qrcode`
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `type` | `"qrcode"` | Yes | — | Element type |
+| `content` | `string` | Yes | — | Data to encode |
+| `options.x` | `integer` | Yes | — | X position in dots |
+| `options.y` | `integer` | Yes | — | Y position in dots |
+| `options.magnification` | `integer` | No | `5` | QR module size (1–10) |
+| `options.errorCorrection` | `string` | No | `"M"` | Error correction: `L` (7%), `M` (15%), `Q` (25%), `H` (30%) |
+
+#### Element: `raw`
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `type` | `"raw"` | Yes | — | Element type |
+| `zpl` | `string` | Yes | — | Raw ZPL commands to inject |
+
+### POST `/api/print/serial`
+
+Multi-copy print with auto-incrementing serial numbers. Use `{serial}` as placeholder in lines.
+
+| Field | Type | Required | Default | Description |
+|-------|------|----------|---------|-------------|
+| `lines` | `string[]` | Yes | — | 1–20 lines (use `{serial}` placeholder) |
+| `copies` | `integer` | Yes | — | Number of copies (1–500) |
+| `serialStart` | `integer` | No | `1` | Starting serial number |
+| `serialFormat` | `string` | No | `"###"` | Padding format: `#`, `##`, `###`, `####`, `#####` |
+
+### Supported Barcode Types
+
+| Type | Description |
+|------|-------------|
+| `CODE128` | High-density alphanumeric (most common) |
+| `CODE39` | Alphanumeric + symbols |
+| `CODE93` | Compact alphanumeric |
+| `EAN8` | 8-digit retail (Europe) |
+| `EAN13` | 13-digit retail (Europe) |
+| `UPCA` | 12-digit retail (North America) |
+| `UPCE` | Compressed UPC |
+| `CODABAR` | Numeric with start/stop characters |
+| `PDF417` | 2D stacked barcode |
+| `QRCODE` | 2D QR code (use `qrcode` element type instead) |
+| `DATAMATRIX` | 2D Data Matrix |
+
+### Coordinate System
+
+All positions (`x`, `y`) are in **dots** at 203 DPI. The origin (0,0) is the top-left corner of the label.
+
+| Conversion | Formula |
+|-----------|---------|
+| Inches → dots | `inches × 203` |
+| mm → dots | `mm ÷ 25.4 × 203` |
+
+For a **2×1" label**: max X = 406, max Y = 203.  
+For a **4×6" label**: max X = 812, max Y = 1218.
+
 ## Label Sizes
 
 The API tracks the current label size and recently used sizes. Standard sizes are pre-loaded:
