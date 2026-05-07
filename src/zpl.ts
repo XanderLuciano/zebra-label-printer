@@ -119,8 +119,9 @@ export class ZPLBuilder {
     this.ensureStart()
 
     const font = options.font ?? '0'
-    const height = options.height ?? FONTS.ZERO.height
-    const width = options.width ?? (options.height ? Math.round(options.height * 0.8) : FONTS.ZERO.width)
+    const ratio = options.ratio ?? 0.8
+    const height = options.height ?? (options.width ? Math.round(options.width / ratio) : FONTS.ZERO.height)
+    const width = options.width ?? (options.height ? Math.round(options.height * ratio) : FONTS.ZERO.width)
 
     let field = `^FO${options.x},${options.y}`
     field += `^A${font}${options.rotation ?? 'N'},${height},${width}`

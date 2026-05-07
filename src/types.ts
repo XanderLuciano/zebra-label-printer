@@ -30,6 +30,8 @@ export interface TextOptions {
   height?: number;
   /** Font width in dots */
   width?: number;
+  /** Width-to-height ratio (0.1–3.0). Used to derive width from height or height from width when the other is not specified. Default: 0.8 */
+  ratio?: number;
   /** Text rotation: N (normal), R (90°), I (180°), B (270°) */
   rotation?: 'N' | 'R' | 'I' | 'B';
   /** Reverse print (white on black) */

@@ -182,7 +182,8 @@ Each element has a `type` discriminator. Supported element types:
 | `options.y` | `integer` | Yes | — | Y position in dots |
 | `options.font` | `string` | No | `"0"` | Zebra font ID |
 | `options.height` | `integer` | No | `24` | Font height in dots |
-| `options.width` | `integer` | No | `height × 0.8` | Font width in dots (auto-derived from height for proportional text) |
+| `options.width` | `integer` | No | `height × ratio` | Font width in dots (auto-derived from height if not specified) |
+| `options.ratio` | `number` | No | `0.8` | Width-to-height ratio (0.1–3.0). Used to derive width from height or height from width when the other is not specified |
 | `options.rotation` | `string` | No | `"N"` | Rotation: `N` (normal), `R` (90°), `I` (180°), `B` (270°) |
 | `options.reverse` | `boolean` | No | `false` | Reverse print (white on black) |
 

@@ -60,6 +60,7 @@ const textElementSchema = z.object({
     font: z.string().optional(),
     height: z.number().int().min(1).optional(),
     width: z.number().int().min(1).optional(),
+    ratio: z.number().min(0.1).max(3.0).optional(),
     rotation: rotationEnum.optional(),
     reverse: z.boolean().optional()
   }).strict()
