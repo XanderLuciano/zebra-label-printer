@@ -9,6 +9,7 @@ import type { ZodSchema } from 'zod'
 import type { Handler } from '../router'
 import { json, readBody, validate, checkAuth } from '../helpers'
 import { ZPLBuilder, textLabel, barcodeLabel, qrLabel } from '../../zpl'
+import { getLabelSize } from '../../db/settings-repo'
 import {
   textLabelSchema,
   barcodeLabelSchema,
@@ -142,7 +143,12 @@ export function printLabelHandler(apiKey: string, getQueue: () => PrintQueue | n
     if (!data) return
 
     const zplGen = () => {
-      const builder = new ZPLBuilder()
+      const labelSize = getLabelSize()
+      const builder = new ZPLBuilder({
+        width: labelSize.widthDots,
+        height: labelSize.heightDots
+      })
+      builder.labelSize(labelSize.widthDots, labelSize.heightDots)
       for (const el of data.elements) {
         builder.element(el as Parameters<ZPLBuilder['element']>[0])
       }
