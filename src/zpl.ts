@@ -195,9 +195,10 @@ export class ZPLBuilder {
     const mag = options.magnification ?? 5
     const ec = options.errorCorrection ?? 'M'
 
-    const field = `^FO${options.x},${options.y}^BQN,2,${mag}`
+    let field = `^FO${options.x},${options.y}`
+    field += `^BQN,2,${mag}`
+    field += `^FD${ec}A,${this.escapeFieldData(content)}^FS`
     this.commands.push(field)
-    this.commands.push(`^FD${ec}A,${this.escapeFieldData(content)}^FS`)
     return this
   }
 
