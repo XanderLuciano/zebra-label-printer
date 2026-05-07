@@ -64,8 +64,8 @@ if [ -f "package.json" ] && [ -f "build.sh" ]; then
   bash build.sh
   cd dist-zebra
   npm ci --omit=dev
-  INSTALL_DIR="$(pwd)"
   cd ..
+  INSTALL_DIR="$(pwd)"
 else
   info "Installing from GitHub..."
   INSTALL_DIR="$HOME/.zebra-label-printer"
