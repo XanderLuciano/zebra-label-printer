@@ -1,6 +1,6 @@
 {
   "name": "zebra-label-printer",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Library for connecting to and printing labels on Zebra GK420d label printers, with webhook support",
   "main": "dist/index.js",
   "types": "dist/index.d.ts",
