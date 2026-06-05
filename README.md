@@ -116,6 +116,31 @@ curl -X PUT http://localhost:3420/api/label-size \
   -H "Content-Type: application/json" \
   -d '{"widthDots": 609, "heightDots": 406, "name": "3×2\" Shipping"}'
 
+# Print a part label (QR code + part info, 2x1" layout)
+curl -X POST http://localhost:3420/api/print/label \
+  -H "Content-Type: application/json" \
+  -d '{
+    "elements": [
+      {"type": "qrcode", "content": "135853-002-A-NRG", "options": {"x": 40, "y": 50, "magnification": 4}},
+      {"type": "text", "content": "FTS Lens Mount", "options": {"x": 160, "y": 50, "height": 35, "width": 28}},
+      {"type": "text", "content": "135853-002", "options": {"x": 160, "y": 95, "height": 30, "width": 28}},
+      {"type": "text", "content": "Rev A | NRG", "options": {"x": 160, "y": 135, "height": 25, "width": 20}}
+    ]
+  }'
+
+# Print 5 copies of a part label (one label per part)
+curl -X POST http://localhost:3420/api/print/label \
+  -H "Content-Type: application/json" \
+  -d '{
+    "elements": [
+      {"type": "qrcode", "content": "135853-002-A-NRG", "options": {"x": 40, "y": 50, "magnification": 4}},
+      {"type": "text", "content": "FTS Lens Mount", "options": {"x": 160, "y": 50, "height": 35, "width": 28}},
+      {"type": "text", "content": "135853-002", "options": {"x": 160, "y": 95, "height": 30, "width": 28}},
+      {"type": "text", "content": "Rev A | NRG", "options": {"x": 160, "y": 135, "height": 25, "width": 20}},
+      {"type": "raw", "zpl": "^PQ5"}
+    ]
+  }'
+
 # Validation errors return structured details:
 curl -X POST http://localhost:3420/api/print/text \
   -H "Content-Type: application/json" \
@@ -220,6 +245,41 @@ Each element has a `type` discriminator. Supported element types:
 |-------|------|----------|---------|-------------|
 | `type` | `"raw"` | Yes | — | Element type |
 | `zpl` | `string` | Yes | — | Raw ZPL commands to inject |
+
+### Part Label Recipe
+
+The web dashboard's "Quick Print Part Label" uses the `/api/print/label` endpoint with this layout (2×1" label at 203 DPI):
+
+```
+┌──────────────────────────────────┐
+│  ┌─────┐  Part Name             │
+│  │ QR  │  Part Number           │
+│  │Code │  Rev X | Vendor        │
+│  └─────┘                        │
+└──────────────────────────────────┘
+```
+
+**Barcode convention:** The QR code content is `{partNumber}-{rev}-{vendor}`, which uniquely identifies the exact part variant. For example: `135853-002-A-NRG`.
+
+**Multi-copy printing:** To print one label per physical part, include a `raw` element with `^PQ{n}` where `n` is the quantity. This tells the printer firmware to repeat the label without re-sending data.
+
+**Full example (3 copies):**
+
+```bash
+curl -X POST http://localhost:3420/api/print/label \
+  -H "Content-Type: application/json" \
+  -d '{
+    "elements": [
+      {"type": "qrcode", "content": "135853-002-A-NRG", "options": {"x": 40, "y": 50, "magnification": 4}},
+      {"type": "text", "content": "FTS Lens Mount", "options": {"x": 160, "y": 50, "height": 35, "width": 28}},
+      {"type": "text", "content": "135853-002", "options": {"x": 160, "y": 95, "height": 30, "width": 28}},
+      {"type": "text", "content": "Rev A | NRG", "options": {"x": 160, "y": 135, "height": 25, "width": 20}},
+      {"type": "raw", "zpl": "^PQ3"}
+    ]
+  }'
+```
+
+> **Note:** Use only ASCII characters in text content. Zebra printers do not support UTF-8 — multi-byte characters (em dashes, middle dots, accented letters) will render as garbled output.
 
 ### POST `/api/print/serial`
 
