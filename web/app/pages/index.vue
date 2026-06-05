@@ -50,6 +50,8 @@ const partForm = reactive({
   ticket: '',
   quantity: 1,
   printPerPart: false,
+  serialize: false,
+  serialStart: 1,
 });
 const partPrinting = ref(false);
 const partResult = ref<string | null>(null);
@@ -63,25 +65,86 @@ const partBarcode = computed(() => {
   return parts.join('-');
 });
 
-// Layout for 2x1" label (406 x 203 dots at 203 DPI)
-// QR code on left (vertically centered), 4 lines of text on right
-function composeLabelElements() {
-  // QR at magnification 5 = 105x105 dots, centered vertically
-  // (203 - 105) / 2 = 49 dots from top
-  const qrMag = 5;
-  const qrSize = 21 * qrMag; // 105 dots
-  const qrX = 8;
-  const qrY = Math.round((203 - qrSize) / 2); // 49
+// When serialize is on, force printPerPart
+watch(() => partForm.serialize, (val) => {
+  if (val) partForm.printPerPart = true;
+});
 
-  // Text starts after QR + gap
-  const textX = qrX + qrSize + 12; // 125
+// Format serial number: VENDOR-001
+function formatSerial(index: number): string {
+  const sn = String(partForm.serialStart + index).padStart(3, '0');
+  return `${partForm.vendor.trim() || 'NRG'}-${sn}`;
+}
 
-  // 4 lines of text, vertically centered in 203 dots
-  // Total text block height: ~160 dots (4 lines × 40 spacing)
-  // Top offset: (203 - 160) / 2 ≈ 22
-  const textStartY = 22;
-  const lineSpacing = 42;
+// Layout constants for 2x1" label (406 x 203 dots at 203 DPI)
+const qrMag = 5;
+const qrSize = 21 * qrMag; // 105 dots
+const qrX = 8;
+const qrY = Math.round((203 - qrSize) / 2); // 49
+const textX = qrX + qrSize + 12; // 125
+const textStartY = 22;
+const lineSpacing = 42;
 
+// Compose a single part label (optionally with serial number)
+function composeSingleLabel(serial?: string): Array<Record<string, unknown>> {
+  // If serialized, the barcode includes serial instead of vendor
+  const barcodeContent = serial
+    ? [partForm.partNumber.trim(), partForm.rev.trim(), serial].filter(Boolean).join('-')
+    : partBarcode.value;
+
+  const elements: Array<Record<string, unknown>> = [
+    {
+      type: 'qrcode',
+      content: barcodeContent,
+      options: { x: qrX, y: qrY, magnification: qrMag },
+    },
+    {
+      type: 'text',
+      content: partForm.partName,
+      options: { x: textX, y: textStartY, height: 30, width: 24 },
+    },
+    {
+      type: 'text',
+      content: partForm.partNumber,
+      options: { x: textX, y: textStartY + lineSpacing, height: 26, width: 22 },
+    },
+  ];
+
+  // Line 3: Rev | Serial or Vendor
+  const line3Parts: string[] = [];
+  if (partForm.rev.trim()) line3Parts.push(`Rev ${partForm.rev.trim()}`);
+  if (serial) {
+    line3Parts.push(serial);
+  } else if (partForm.vendor.trim()) {
+    line3Parts.push(partForm.vendor.trim());
+  }
+  if (line3Parts.length > 0) {
+    elements.push({
+      type: 'text',
+      content: line3Parts.join(' | '),
+      options: { x: textX, y: textStartY + lineSpacing * 2, height: 24, width: 20 },
+    });
+  }
+
+  // Line 4: Ticket (no qty on individual serialized labels)
+  const line4Parts: string[] = [];
+  if (partForm.ticket.trim()) line4Parts.push(partForm.ticket.trim());
+  if (!serial && !partForm.printPerPart && partForm.quantity > 1) {
+    line4Parts.push(`Qty: ${partForm.quantity}`);
+  }
+  if (line4Parts.length > 0) {
+    elements.push({
+      type: 'text',
+      content: line4Parts.join(' | '),
+      options: { x: textX, y: textStartY + lineSpacing * 3, height: 24, width: 20 },
+    });
+  }
+
+  return elements;
+}
+
+// Compose a bag label (summary label with full quantity)
+function composeBagLabel(): Array<Record<string, unknown>> {
   const elements: Array<Record<string, unknown>> = [
     {
       type: 'qrcode',
@@ -112,26 +175,15 @@ function composeLabelElements() {
     });
   }
 
-  // Line 4: Ticket | Qty
+  // Line 4: Ticket | Qty (always show qty on bag label)
   const line4Parts: string[] = [];
   if (partForm.ticket.trim()) line4Parts.push(partForm.ticket.trim());
-  if (partForm.quantity > 1 && !partForm.printPerPart) line4Parts.push(`Qty: ${partForm.quantity}`);
-  if (line4Parts.length > 0) {
-    elements.push({
-      type: 'text',
-      content: line4Parts.join(' | '),
-      options: { x: textX, y: textStartY + lineSpacing * 3, height: 24, width: 20 },
-    });
-  }
-
-  // Add print quantity command if printing 1 label per part
-  const copies = partForm.printPerPart ? partForm.quantity : 1;
-  if (copies > 1) {
-    elements.push({
-      type: 'raw',
-      zpl: `^PQ${copies}`,
-    });
-  }
+  line4Parts.push(`Qty: ${partForm.quantity}`);
+  elements.push({
+    type: 'text',
+    content: line4Parts.join(' | '),
+    options: { x: textX, y: textStartY + lineSpacing * 3, height: 24, width: 20 },
+  });
 
   return elements;
 }
@@ -142,12 +194,38 @@ async function printPartLabel() {
   partResult.value = null;
 
   try {
-    const elements = composeLabelElements();
-    const result = await api.printLabel({ elements });
-    const copies = partForm.printPerPart ? partForm.quantity : 1;
-    partResult.value = result.success
-      ? `✅ Printed "${partForm.partName}"${copies > 1 ? ` x${copies}` : ''}! ${result.queued ? '(Queued)' : ''}`
-      : `❌ Failed`;
+    if (partForm.serialize && partForm.quantity > 1) {
+      // Print individual serialized labels + 1 bag label
+      let printed = 0;
+      for (let i = 0; i < partForm.quantity; i++) {
+        const serial = formatSerial(i);
+        const elements = composeSingleLabel(serial);
+        await api.printLabel({ elements });
+        printed++;
+      }
+      // Print bag label
+      const bagElements = composeBagLabel();
+      await api.printLabel({ elements: bagElements });
+      printed++;
+
+      partResult.value = `✅ Printed ${partForm.quantity} serialized labels + 1 bag label (${printed} total)`;
+    } else if (partForm.printPerPart && partForm.quantity > 1) {
+      // Print identical individual labels via ^PQ + 1 bag label
+      const elements = composeSingleLabel();
+      elements.push({ type: 'raw', zpl: `^PQ${partForm.quantity}` });
+      await api.printLabel({ elements });
+
+      // Print bag label
+      const bagElements = composeBagLabel();
+      await api.printLabel({ elements: bagElements });
+
+      partResult.value = `✅ Printed ${partForm.quantity} part labels + 1 bag label`;
+    } else {
+      // Single label (or qty shown on label)
+      const elements = composeSingleLabel();
+      await api.printLabel({ elements });
+      partResult.value = `✅ Printed "${partForm.partName}"`;
+    }
     refreshStats();
   } catch (err: any) {
     partResult.value = `❌ Error: ${err.message}`;
@@ -321,12 +399,34 @@ const formatUptime = (s: number) => {
               />
             </UFormField>
           </div>
-          <div v-if="partForm.quantity > 1" class="flex items-center gap-2">
-            <UCheckbox
-              v-model="partForm.printPerPart"
-              label="Print 1 label per part"
-            />
-            <span class="text-xs text-gray-500">({{ partForm.quantity }} labels)</span>
+          <div v-if="partForm.quantity > 1" class="space-y-2">
+            <div class="flex items-center gap-2">
+              <UCheckbox
+                v-model="partForm.printPerPart"
+                label="Print 1 label per part"
+                :disabled="partForm.serialize"
+              />
+              <span class="text-xs text-gray-500">({{ partForm.quantity }} labels + 1 bag label)</span>
+            </div>
+            <div class="flex items-center gap-4">
+              <UCheckbox
+                v-model="partForm.serialize"
+                label="Serialize labels"
+              />
+              <div v-if="partForm.serialize" class="flex items-center gap-2">
+                <span class="text-xs text-gray-500">Start at:</span>
+                <UInput
+                  v-model.number="partForm.serialStart"
+                  type="number"
+                  :min="1"
+                  size="xs"
+                  class="w-16"
+                />
+                <span class="text-xs text-gray-500">
+                  ({{ formatSerial(0) }} ... {{ formatSerial(partForm.quantity - 1) }})
+                </span>
+              </div>
+            </div>
           </div>
           <div class="flex items-center gap-3">
             <UButton
