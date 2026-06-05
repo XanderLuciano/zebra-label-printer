@@ -13,8 +13,8 @@ export default defineNuxtConfig({
 
   runtimeConfig: {
     public: {
-      // Empty = same origin (API and UI served from same port)
-      apiBase: process.env.NUXT_PUBLIC_API_BASE || '',
+      // In dev, point at the backend server; in prod (same origin), leave empty.
+      apiBase: process.env.NUXT_PUBLIC_API_BASE || (process.env.NODE_ENV === 'development' ? 'http://localhost:3420' : ''),
     },
   },
 

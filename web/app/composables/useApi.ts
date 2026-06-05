@@ -11,7 +11,9 @@ const API_BASE = 'http://localhost:3420';
 
 export function useApi() {
   const config = useRuntimeConfig();
-  const base = config.public.apiBase as string || API_BASE;
+  // In production, apiBase is empty → use same-origin (relative paths).
+  // In dev, set NUXT_PUBLIC_API_BASE=http://localhost:3420 to point at the backend.
+  const base = config.public.apiBase as string || '';
 
   async function get<T>(path: string): Promise<T> {
     return $fetch<T>(`${base}${path}`);
