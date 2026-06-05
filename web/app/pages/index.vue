@@ -245,48 +245,56 @@ const formatUptime = (s: number) => {
           </div>
         </template>
         <div class="space-y-3">
-          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
-            <UFormGroup label="Part Name" required class="col-span-2 sm:col-span-2">
+          <div class="grid grid-cols-2 gap-3">
+            <UFormField label="Part Name" required>
               <UInput
                 v-model="partForm.partName"
                 placeholder="FTS Lens Mount"
                 size="sm"
                 :disabled="partPrinting"
               />
-            </UFormGroup>
-            <UFormGroup label="Part Number" required>
+            </UFormField>
+            <UFormField label="Part Number" required>
               <UInput
                 v-model="partForm.partNumber"
                 placeholder="135853-002"
                 size="sm"
                 :disabled="partPrinting"
               />
-            </UFormGroup>
-            <UFormGroup label="Rev">
+            </UFormField>
+            <UFormField label="Revision">
               <UInput
                 v-model="partForm.rev"
                 placeholder="A"
                 size="sm"
                 :disabled="partPrinting"
               />
-            </UFormGroup>
-            <UFormGroup label="Vendor">
+            </UFormField>
+            <UFormField label="Vendor">
               <UInput
                 v-model="partForm.vendor"
                 placeholder="NRG"
                 size="sm"
                 :disabled="partPrinting"
               />
-            </UFormGroup>
-            <UFormGroup label="Ticket #">
+            </UFormField>
+            <UFormField label="Ticket #">
               <UInput
                 v-model="partForm.ticket"
                 placeholder="PI-8088"
                 size="sm"
                 :disabled="partPrinting"
               />
-            </UFormGroup>
-            <UFormGroup label="Qty">
+            </UFormField>
+            <UFormField label="Barcode (auto)">
+              <UInput
+                :model-value="partBarcode"
+                disabled
+                size="sm"
+                placeholder="partNumber-rev-vendor"
+              />
+            </UFormField>
+            <UFormField label="Quantity" class="col-span-2">
               <UInput
                 v-model.number="partForm.quantity"
                 type="number"
@@ -295,15 +303,7 @@ const formatUptime = (s: number) => {
                 size="sm"
                 :disabled="partPrinting"
               />
-            </UFormGroup>
-            <UFormGroup label="Barcode (auto)" class="col-span-2">
-              <UInput
-                :model-value="partBarcode"
-                disabled
-                size="sm"
-                placeholder="partNumber-rev-vendor"
-              />
-            </UFormGroup>
+            </UFormField>
           </div>
           <div v-if="partForm.quantity > 1" class="flex items-center gap-2">
             <UCheckbox

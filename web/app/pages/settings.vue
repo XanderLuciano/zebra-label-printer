@@ -151,13 +151,13 @@ async function setCustomSize() {
 
         <!-- Custom size -->
         <div class="flex items-end gap-3 pt-2 border-t">
-          <UFormGroup label="Width (inches)">
+          <UFormField label="Width (inches)">
             <UInput v-model="customWidth" type="number" placeholder="3" size="sm" class="w-24" min="1" max="12" />
-          </UFormGroup>
+          </UFormField>
           <span class="text-xl text-gray-400 pb-1">×</span>
-          <UFormGroup label="Height (inches)">
+          <UFormField label="Height (inches)">
             <UInput v-model="customHeight" type="number" placeholder="5" size="sm" class="w-24" min="1" max="12" />
-          </UFormGroup>
+          </UFormField>
           <UButton
             label="Apply"
             icon="i-lucide-check"
@@ -179,12 +179,12 @@ async function setCustomSize() {
         </div>
       </template>
       <div class="max-w-lg">
-        <UFormGroup label="Check Interval (ms)">
+        <UFormField label="Check Interval (ms)">
           <UInput v-model="form.queueCheckIntervalMs" type="number" />
           <template #help>
             How often the queue processor polls for printer availability and pending jobs.
           </template>
-        </UFormGroup>
+        </UFormField>
       </div>
     </UCard>
 
@@ -197,9 +197,9 @@ async function setCustomSize() {
         </div>
       </template>
       <div class="max-w-lg">
-        <UFormGroup label="API Key">
+        <UFormField label="API Key">
           <UInput v-model="form.apiKey" type="password" placeholder="Leave empty for no auth" />
-        </UFormGroup>
+        </UFormField>
       </div>
     </UCard>
 
