@@ -45,18 +45,28 @@ async function quickPrint() {
 const partForm = reactive({
   partName: '',
   partNumber: '',
-  barcode: '',
+  rev: '',
+  vendor: 'NRG',
   quantity: 1,
-  vendor: '',
+  printPerPart: false,
 });
 const partPrinting = ref(false);
 const partResult = ref<string | null>(null);
+
+// Auto-generate barcode from partNumber-rev-vendor
+const partBarcode = computed(() => {
+  const parts: string[] = [];
+  if (partForm.partNumber.trim()) parts.push(partForm.partNumber.trim());
+  if (partForm.rev.trim()) parts.push(partForm.rev.trim());
+  if (partForm.vendor.trim()) parts.push(partForm.vendor.trim());
+  return parts.join('-');
+});
 
 function composeLabelElements() {
   const elements: Array<Record<string, unknown>> = [
     {
       type: 'qrcode',
-      content: partForm.barcode,
+      content: partBarcode.value,
       options: { x: 40, y: 50, magnification: 4 },
     },
     {
@@ -72,7 +82,8 @@ function composeLabelElements() {
   ];
 
   const infoParts: string[] = [];
-  if (partForm.quantity > 1) infoParts.push(`Qty: ${partForm.quantity}`);
+  if (partForm.rev.trim()) infoParts.push(`Rev ${partForm.rev.trim()}`);
+  if (partForm.quantity > 1 && !partForm.printPerPart) infoParts.push(`Qty: ${partForm.quantity}`);
   if (partForm.vendor.trim()) infoParts.push(partForm.vendor.trim());
   if (infoParts.length > 0) {
     elements.push({
@@ -86,16 +97,17 @@ function composeLabelElements() {
 }
 
 async function printPartLabel() {
-  if (!partForm.partName.trim() || !partForm.partNumber.trim() || !partForm.barcode.trim()) return;
+  if (!partForm.partName.trim() || !partForm.partNumber.trim() || !partBarcode.value) return;
   partPrinting.value = true;
   partResult.value = null;
 
   try {
     const elements = composeLabelElements();
-    const copies = partForm.quantity > 1 ? partForm.quantity : undefined;
+    // If printPerPart, send quantity as copies (one label per part)
+    const copies = (partForm.quantity > 1 && partForm.printPerPart) ? partForm.quantity : undefined;
     const result = await api.printLabel({ elements, copies });
     partResult.value = result.success
-      ? `✅ Printed "${partForm.partName}"! ${result.queued ? '(Queued)' : ''}`
+      ? `✅ Printed "${partForm.partName}"${copies ? ` ×${copies}` : ''}! ${result.queued ? '(Queued)' : ''}`
       : `❌ Failed`;
     refreshStats();
   } catch (err: any) {
@@ -166,102 +178,119 @@ const formatUptime = (s: number) => {
       </UCard>
     </div>
 
-    <!-- Quick print -->
-    <UCard>
-      <template #header>
-        <div class="flex items-center gap-2">
-          <UIcon name="i-lucide-send" />
-          <span class="font-medium">Quick Print</span>
-        </div>
-      </template>
-      <div class="space-y-3">
-        <div class="flex gap-2">
-          <UInput
-            v-model="printLines"
-            placeholder="Type label text and press Enter..."
-            size="lg"
-            :disabled="printing"
-            class="flex-1"
-            @keyup.enter="quickPrint"
-          />
-          <UButton
-            icon="i-lucide-arrow-right"
-            size="lg"
-            color="primary"
-            :loading="printing"
-            :disabled="!printLines.trim()"
-            @click="quickPrint"
-          />
-        </div>
-        <p v-if="printResult" class="text-sm" :class="printResult.startsWith('✅') ? 'text-green-600' : 'text-red-600'">
-          {{ printResult }}
-        </p>
-      </div>
-    </UCard>
-
-    <!-- Quick Print Part Label -->
-    <UCard>
-      <template #header>
-        <div class="flex items-center gap-2">
-          <UIcon name="i-lucide-tag" class="text-primary-500" />
-          <span class="font-medium">Quick Print Part Label</span>
-        </div>
-      </template>
-      <div class="space-y-4">
-        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-          <UFormGroup label="Part Name" required>
+    <!-- Quick Print + Part Label side by side -->
+    <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <!-- Quick print -->
+      <UCard>
+        <template #header>
+          <div class="flex items-center gap-2">
+            <UIcon name="i-lucide-send" />
+            <span class="font-medium">Quick Print</span>
+          </div>
+        </template>
+        <div class="space-y-3">
+          <div class="flex gap-2">
             <UInput
-              v-model="partForm.partName"
-              placeholder="FTS Lens Mount"
-              :disabled="partPrinting"
+              v-model="printLines"
+              placeholder="Type label text and press Enter..."
+              size="lg"
+              :disabled="printing"
+              class="flex-1"
+              @keyup.enter="quickPrint"
             />
-          </UFormGroup>
-          <UFormGroup label="Part Number" required>
-            <UInput
-              v-model="partForm.partNumber"
-              placeholder="135853-002"
-              :disabled="partPrinting"
+            <UButton
+              icon="i-lucide-arrow-right"
+              size="lg"
+              color="primary"
+              :loading="printing"
+              :disabled="!printLines.trim()"
+              @click="quickPrint"
             />
-          </UFormGroup>
-          <UFormGroup label="Barcode / Serial" required>
-            <UInput
-              v-model="partForm.barcode"
-              placeholder="TEST-PART-A-abc123"
-              :disabled="partPrinting"
-            />
-          </UFormGroup>
-          <UFormGroup label="Quantity">
-            <UInput
-              v-model.number="partForm.quantity"
-              type="number"
-              :min="1"
-              :max="50"
-              :disabled="partPrinting"
-            />
-          </UFormGroup>
-          <UFormGroup label="Vendor" class="sm:col-span-2">
-            <UInput
-              v-model="partForm.vendor"
-              placeholder="Optional vendor name"
-              :disabled="partPrinting"
-            />
-          </UFormGroup>
-        </div>
-        <div class="flex items-center gap-3">
-          <UButton
-            label="Print Label"
-            icon="i-lucide-printer"
-            color="primary"
-            :loading="partPrinting"
-            :disabled="!partForm.partName.trim() || !partForm.partNumber.trim() || !partForm.barcode.trim()"
-            @click="printPartLabel"
-          />
-          <p v-if="partResult" class="text-sm" :class="partResult.startsWith('✅') ? 'text-green-600' : 'text-red-600'">
-            {{ partResult }}
+          </div>
+          <p v-if="printResult" class="text-sm" :class="printResult.startsWith('✅') ? 'text-green-600' : 'text-red-600'">
+            {{ printResult }}
           </p>
         </div>
-      </div>
-    </UCard>
+      </UCard>
+
+      <!-- Quick Print Part Label -->
+      <UCard>
+        <template #header>
+          <div class="flex items-center gap-2">
+            <UIcon name="i-lucide-tag" class="text-primary-500" />
+            <span class="font-medium">Quick Print Part Label</span>
+          </div>
+        </template>
+        <div class="space-y-4">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <UFormGroup label="Part Name" required>
+              <UInput
+                v-model="partForm.partName"
+                placeholder="FTS Lens Mount"
+                :disabled="partPrinting"
+              />
+            </UFormGroup>
+            <UFormGroup label="Part Number" required>
+              <UInput
+                v-model="partForm.partNumber"
+                placeholder="135853-002"
+                :disabled="partPrinting"
+              />
+            </UFormGroup>
+            <UFormGroup label="Rev">
+              <UInput
+                v-model="partForm.rev"
+                placeholder="A"
+                :disabled="partPrinting"
+              />
+            </UFormGroup>
+            <UFormGroup label="Vendor">
+              <UInput
+                v-model="partForm.vendor"
+                placeholder="NRG"
+                :disabled="partPrinting"
+              />
+            </UFormGroup>
+            <UFormGroup label="Quantity">
+              <UInput
+                v-model.number="partForm.quantity"
+                type="number"
+                :min="1"
+                :max="50"
+                :disabled="partPrinting"
+              />
+            </UFormGroup>
+            <UFormGroup label="Barcode (auto)">
+              <UInput
+                :model-value="partBarcode"
+                disabled
+                placeholder="partNumber-rev-vendor"
+              />
+            </UFormGroup>
+          </div>
+          <div v-if="partForm.quantity > 1" class="flex items-center gap-2">
+            <UCheckbox
+              v-model="partForm.printPerPart"
+              label="Print 1 label per part"
+            />
+            <span class="text-xs text-gray-500">({{ partForm.quantity }} labels)</span>
+          </div>
+          <div class="flex items-center gap-3">
+            <UButton
+              label="Print Label"
+              icon="i-lucide-printer"
+              color="primary"
+              :loading="partPrinting"
+              :disabled="!partForm.partName.trim() || !partForm.partNumber.trim()"
+              @click="printPartLabel"
+            />
+            <p v-if="partResult" class="text-sm" :class="partResult.startsWith('✅') ? 'text-green-600' : 'text-red-600'">
+              {{ partResult }}
+            </p>
+          </div>
+        </div>
+      </UCard>
+    </div>
 
     <!-- System info -->
     <UCard v-if="debug">
