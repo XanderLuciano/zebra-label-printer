@@ -88,8 +88,17 @@ function composeLabelElements() {
   if (infoParts.length > 0) {
     elements.push({
       type: 'text',
-      content: infoParts.join(' · '),
+      content: infoParts.join(' | '),
       options: { x: 160, y: 135, height: 25, width: 20 },
+    });
+  }
+
+  // Add print quantity command if printing 1 label per part
+  const copies = partForm.printPerPart ? partForm.quantity : 1;
+  if (copies > 1) {
+    elements.push({
+      type: 'raw',
+      zpl: `^PQ${copies}`,
     });
   }
 
@@ -103,11 +112,10 @@ async function printPartLabel() {
 
   try {
     const elements = composeLabelElements();
-    // If printPerPart, send quantity as copies (one label per part)
-    const copies = (partForm.quantity > 1 && partForm.printPerPart) ? partForm.quantity : undefined;
-    const result = await api.printLabel({ elements, copies });
+    const result = await api.printLabel({ elements });
+    const copies = partForm.printPerPart ? partForm.quantity : 1;
     partResult.value = result.success
-      ? `✅ Printed "${partForm.partName}"${copies ? ` ×${copies}` : ''}! ${result.queued ? '(Queued)' : ''}`
+      ? `✅ Printed "${partForm.partName}"${copies > 1 ? ` ×${copies}` : ''}! ${result.queued ? '(Queued)' : ''}`
       : `❌ Failed`;
     refreshStats();
   } catch (err: any) {
