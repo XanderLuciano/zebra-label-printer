@@ -64,23 +64,39 @@ const partBarcode = computed(() => {
 });
 
 // Layout for 2x1" label (406 x 203 dots at 203 DPI)
-// QR code on left, 4 lines of text on right
+// QR code on left (vertically centered), 4 lines of text on right
 function composeLabelElements() {
+  // QR at magnification 5 = 105x105 dots, centered vertically
+  // (203 - 105) / 2 = 49 dots from top
+  const qrMag = 5;
+  const qrSize = 21 * qrMag; // 105 dots
+  const qrX = 8;
+  const qrY = Math.round((203 - qrSize) / 2); // 49
+
+  // Text starts after QR + gap
+  const textX = qrX + qrSize + 12; // 125
+
+  // 4 lines of text, vertically centered in 203 dots
+  // Total text block height: ~160 dots (4 lines × 40 spacing)
+  // Top offset: (203 - 160) / 2 ≈ 22
+  const textStartY = 22;
+  const lineSpacing = 42;
+
   const elements: Array<Record<string, unknown>> = [
     {
       type: 'qrcode',
       content: partBarcode.value,
-      options: { x: 10, y: 15, magnification: 4 },
+      options: { x: qrX, y: qrY, magnification: qrMag },
     },
     {
       type: 'text',
       content: partForm.partName,
-      options: { x: 105, y: 15, height: 28, width: 22 },
+      options: { x: textX, y: textStartY, height: 30, width: 24 },
     },
     {
       type: 'text',
       content: partForm.partNumber,
-      options: { x: 105, y: 50, height: 24, width: 20 },
+      options: { x: textX, y: textStartY + lineSpacing, height: 26, width: 22 },
     },
   ];
 
@@ -92,7 +108,7 @@ function composeLabelElements() {
     elements.push({
       type: 'text',
       content: line3Parts.join(' | '),
-      options: { x: 105, y: 82, height: 22, width: 18 },
+      options: { x: textX, y: textStartY + lineSpacing * 2, height: 24, width: 20 },
     });
   }
 
@@ -104,7 +120,7 @@ function composeLabelElements() {
     elements.push({
       type: 'text',
       content: line4Parts.join(' | '),
-      options: { x: 105, y: 112, height: 22, width: 18 },
+      options: { x: textX, y: textStartY + lineSpacing * 3, height: 24, width: 20 },
     });
   }
 
