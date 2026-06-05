@@ -87,10 +87,8 @@ const lineSpacing = 42;
 
 // Compose a single part label (optionally with serial number)
 function composeSingleLabel(serial?: string): Array<Record<string, unknown>> {
-  // If serialized, the barcode includes serial instead of vendor
-  const barcodeContent = serial
-    ? [partForm.partNumber.trim(), partForm.rev.trim(), serial].filter(Boolean).join('-')
-    : partBarcode.value;
+  // Barcode is always the same: partNumber-rev-vendor (identifies the item+vendor)
+  const barcodeContent = partBarcode.value;
 
   const elements: Array<Record<string, unknown>> = [
     {
