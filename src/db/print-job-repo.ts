@@ -1,13 +1,15 @@
 /**
  * Print job repository — CRUD for the print_jobs and job_logs tables.
+ * Uses Drizzle ORM for type-safe, database-agnostic queries.
  */
 
+import { eq, sql, desc, asc, count, and } from 'drizzle-orm'
 import { getDb } from './database'
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-import type { PrintResult } from '../types'
+import { printJobs, jobLogs } from './schema'
+import type { JobStatus, JobType, LogLevel } from '../constants'
+import { DEFAULT_JOB_LIMIT, MAX_JOB_LIMIT } from '../constants'
 
-export type JobStatus = 'pending' | 'printing' | 'completed' | 'failed' | 'cancelled'
-export type JobType = 'text' | 'barcode' | 'qr' | 'zpl' | 'label'
+export type { JobStatus, JobType }
 
 export interface PrintJob {
   id: string;
@@ -27,7 +29,7 @@ export interface PrintJob {
 export interface JobLogEntry {
   id: number;
   job_id: string;
-  level: 'debug' | 'info' | 'warn' | 'error';
+  level: LogLevel;
   message: string;
   created_at: string;
 }
@@ -45,6 +47,35 @@ function generateId(): string {
   return `job_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`
 }
 
+/** Map a Drizzle row to the PrintJob interface (snake_case for backward compat) */
+function toPrintJob(row: typeof printJobs.$inferSelect): PrintJob {
+  return {
+    id: row.id,
+    status: row.status as JobStatus,
+    job_type: row.jobType as JobType,
+    request_data: row.requestData,
+    zpl_commands: row.zplCommands,
+    printer_name: row.printerName,
+    cups_job_id: row.cupsJobId,
+    error_message: row.errorMessage,
+    created_at: row.createdAt,
+    started_at: row.startedAt,
+    completed_at: row.completedAt,
+    priority: row.priority
+  }
+}
+
+/** Map a Drizzle row to the JobLogEntry interface */
+function toJobLogEntry(row: typeof jobLogs.$inferSelect): JobLogEntry {
+  return {
+    id: row.id,
+    job_id: row.jobId,
+    level: row.level as LogLevel,
+    message: row.message,
+    created_at: row.createdAt
+  }
+}
+
 /** Create a new print job (status: pending) */
 export function createJob(
   jobType: JobType,
@@ -56,10 +87,15 @@ export function createJob(
   const id = generateId()
   const data = JSON.stringify(requestData)
 
-  db.prepare(`
-    INSERT INTO print_jobs (id, status, job_type, request_data, zpl_commands, printer_name, priority)
-    VALUES (?, 'pending', ?, ?, ?, ?, 0)
-  `).run(id, jobType, data, zplCommands ?? null, printerName ?? null)
+  db.insert(printJobs).values({
+    id,
+    status: 'pending',
+    jobType,
+    requestData: data,
+    zplCommands: zplCommands ?? null,
+    printerName: printerName ?? null,
+    priority: 0
+  }).run()
 
   addJobLog(id, 'info', `Job created (${jobType})`)
   return getJob(id)!
@@ -68,7 +104,8 @@ export function createJob(
 /** Get a job by ID */
 export function getJob(id: string): PrintJob | null {
   const db = getDb()
-  return (db.prepare('SELECT * FROM print_jobs WHERE id = ?').get(id) as PrintJob) ?? null
+  const row = db.select().from(printJobs).where(eq(printJobs.id, id)).get()
+  return row ? toPrintJob(row) : null
 }
 
 /** Update job status */
@@ -78,33 +115,32 @@ export function updateJobStatus(
   extra?: { cupsJobId?: string; errorMessage?: string }
 ): void {
   const db = getDb()
-  const updates: string[] = ['status = ?']
-  const params: unknown[] = [status]
+
+  // Use Record<string, unknown> for the update set because Drizzle's sql``
+  // template returns a SQL token, not a plain string. This avoids double-casting.
+  const updates: Record<string, unknown> = { status }
 
   if (status === 'printing') {
-    updates.push('started_at = datetime(\'now\')')
+    updates.startedAt = sql`datetime('now')`
   }
   if (status === 'completed' || status === 'failed' || status === 'cancelled') {
-    updates.push('completed_at = datetime(\'now\')')
+    updates.completedAt = sql`datetime('now')`
   }
   if (extra?.cupsJobId) {
-    updates.push('cups_job_id = ?')
-    params.push(extra.cupsJobId)
+    updates.cupsJobId = extra.cupsJobId
   }
   if (extra?.errorMessage) {
-    updates.push('error_message = ?')
-    params.push(extra.errorMessage)
+    updates.errorMessage = extra.errorMessage
   }
 
-  params.push(id)
-  db.prepare(`UPDATE print_jobs SET ${updates.join(', ')} WHERE id = ?`).run(...params)
+  db.update(printJobs).set(updates).where(eq(printJobs.id, id)).run()
   addJobLog(id, 'info', `Status → ${status}`)
 }
 
 /** Set the ZPL commands for a job */
 export function setJobZpl(id: string, zpl: string): void {
   const db = getDb()
-  db.prepare('UPDATE print_jobs SET zpl_commands = ? WHERE id = ?').run(zpl, id)
+  db.update(printJobs).set({ zplCommands: zpl }).where(eq(printJobs.id, id)).run()
 }
 
 /** List jobs with optional filters */
@@ -116,51 +152,68 @@ export function listJobs(options: {
   orderDir?: 'ASC' | 'DESC';
 } = {}): PrintJob[] {
   const db = getDb()
-  const conditions: string[] = []
-  const params: unknown[] = []
-
-  if (options.status) {
-    conditions.push('status = ?')
-    params.push(options.status)
-  }
-
-  const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : ''
-  const orderBy = options.orderBy ?? 'created_at'
-  const orderDir = options.orderDir ?? 'DESC'
-  const limit = options.limit ?? 50
+  const limit = Math.min(options.limit ?? DEFAULT_JOB_LIMIT, MAX_JOB_LIMIT)
   const offset = options.offset ?? 0
 
-  params.push(limit, offset)
-  return db
-    .prepare(`SELECT * FROM print_jobs ${where} ORDER BY ${orderBy} ${orderDir} LIMIT ? OFFSET ?`)
-    .all(...params) as PrintJob[]
+  // Determine ordering column
+  const orderCol = options.orderBy === 'completed_at'
+    ? printJobs.completedAt
+    : options.orderBy === 'priority'
+      ? printJobs.priority
+      : printJobs.createdAt
+
+  const orderFn = options.orderDir === 'ASC' ? asc : desc
+
+  // Build conditions array to avoid type-unsafe query reassignment
+  const conditions = []
+  if (options.status) {
+    conditions.push(eq(printJobs.status, options.status))
+  }
+
+  const rows = db.select()
+    .from(printJobs)
+    .where(conditions.length ? and(...conditions) : undefined)
+    .orderBy(orderFn(orderCol))
+    .limit(limit)
+    .offset(offset)
+    .all()
+
+  return rows.map(toPrintJob)
 }
 
 /** Get the next pending job (highest priority, oldest first) */
 export function getNextPendingJob(): PrintJob | null {
   const db = getDb()
-  return (
-    db
-      .prepare(
-        'SELECT * FROM print_jobs WHERE status = ? ORDER BY priority DESC, created_at ASC LIMIT 1'
-      )
-      .get('pending') as PrintJob
-  ) ?? null
+  const row = db.select()
+    .from(printJobs)
+    .where(eq(printJobs.status, 'pending'))
+    .orderBy(desc(printJobs.priority), asc(printJobs.createdAt))
+    .limit(1)
+    .get()
+
+  return row ? toPrintJob(row) : null
 }
 
 /** Count pending jobs */
 export function countPendingJobs(): number {
   const db = getDb()
-  const row = db.prepare('SELECT COUNT(*) as cnt FROM print_jobs WHERE status = ?').get('pending') as { cnt: number }
-  return row.cnt
+  const row = db.select({ cnt: count() })
+    .from(printJobs)
+    .where(eq(printJobs.status, 'pending'))
+    .get()
+  return row?.cnt ?? 0
 }
 
 /** Get job statistics */
 export function getJobStats(): JobStats {
   const db = getDb()
-  const rows = db.prepare(`
-    SELECT status, COUNT(*) as cnt FROM print_jobs GROUP BY status
-  `).all() as Array<{ status: string; cnt: number }>
+  const rows = db.select({
+    status: printJobs.status,
+    cnt: count()
+  })
+    .from(printJobs)
+    .groupBy(printJobs.status)
+    .all()
 
   return {
     total: rows.reduce((s, r) => s + r.cnt, 0),
@@ -175,41 +228,46 @@ export function getJobStats(): JobStats {
 /** Add a log entry for a job */
 export function addJobLog(
   jobId: string,
-  level: JobLogEntry['level'],
+  level: LogLevel,
   message: string
 ): void {
   const db = getDb()
-  db.prepare('INSERT INTO job_logs (job_id, level, message) VALUES (?, ?, ?)').run(
-    jobId,
-    level,
-    message
-  )
+  db.insert(jobLogs).values({ jobId, level, message }).run()
 }
 
 /** Get log entries for a job */
 export function getJobLogs(jobId: string, limit = 50): JobLogEntry[] {
   const db = getDb()
-  return db
-    .prepare('SELECT * FROM job_logs WHERE job_id = ? ORDER BY created_at DESC LIMIT ?')
-    .all(jobId, limit) as JobLogEntry[]
+  const rows = db.select()
+    .from(jobLogs)
+    .where(eq(jobLogs.jobId, jobId))
+    .orderBy(desc(jobLogs.createdAt))
+    .limit(limit)
+    .all()
+  return rows.map(toJobLogEntry)
 }
 
 /** Get recent logs (all jobs) */
 export function getRecentLogs(limit = 100): JobLogEntry[] {
   const db = getDb()
-  return db
-    .prepare('SELECT * FROM job_logs ORDER BY created_at DESC LIMIT ?')
-    .all(limit) as JobLogEntry[]
+  const rows = db.select()
+    .from(jobLogs)
+    .orderBy(desc(jobLogs.createdAt))
+    .limit(limit)
+    .all()
+  return rows.map(toJobLogEntry)
 }
 
 /** Delete old completed/cancelled jobs (cleanup) */
 export function cleanupOldJobs(olderThanDays = 30): number {
   const db = getDb()
-  const result = db
-    .prepare(
-      `DELETE FROM print_jobs WHERE status IN ('completed', 'cancelled')
-       AND completed_at < datetime('now', ?)`
+  const result = db.delete(printJobs)
+    .where(
+      and(
+        sql`${printJobs.status} IN ('completed', 'cancelled')`,
+        sql`${printJobs.completedAt} < datetime('now', ${`-${olderThanDays} days`})`
+      )
     )
-    .run(`-${olderThanDays} days`)
+    .run()
   return result.changes
 }
