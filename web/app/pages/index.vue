@@ -1,9 +1,21 @@
 <script setup lang="ts">
 const api = useApi();
 
-const { data: health } = useAsyncData('health', () => api.getHealth());
+const { data: health, refresh: refreshHealth } = useAsyncData('health', () => api.getHealth());
 const { data: debug } = useAsyncData('debug', () => api.getDebug());
-const { data: stats } = useAsyncData('stats', () => api.getJobStats());
+const { data: stats, refresh: refreshStats } = useAsyncData('stats', () => api.getJobStats());
+
+// Poll health + stats every 5 seconds
+let pollInterval: ReturnType<typeof setInterval> | null = null;
+onMounted(() => {
+  pollInterval = setInterval(() => {
+    refreshHealth();
+    refreshStats();
+  }, 5000);
+});
+onUnmounted(() => {
+  if (pollInterval) clearInterval(pollInterval);
+});
 
 // Quick print form
 const printLines = ref('');
@@ -21,11 +33,75 @@ async function quickPrint() {
       ? `✅ Printed! ${result.queued ? '(Queued)' : ''}`
       : `❌ Failed: ${result.error || 'Unknown error'}`;
     printLines.value = '';
-    refreshNuxtData('stats');
+    refreshStats();
   } catch (err: any) {
     printResult.value = `❌ Error: ${err.message}`;
   } finally {
     printing.value = false;
+  }
+}
+
+// Part label quick print
+const partForm = reactive({
+  partName: '',
+  partNumber: '',
+  barcode: '',
+  quantity: 1,
+  vendor: '',
+});
+const partPrinting = ref(false);
+const partResult = ref<string | null>(null);
+
+function composeLabelElements() {
+  const elements: Array<Record<string, unknown>> = [
+    {
+      type: 'qrcode',
+      content: partForm.barcode,
+      options: { x: 40, y: 50, magnification: 4 },
+    },
+    {
+      type: 'text',
+      content: partForm.partName,
+      options: { x: 160, y: 50, height: 35, width: 28 },
+    },
+    {
+      type: 'text',
+      content: partForm.partNumber,
+      options: { x: 160, y: 95, height: 30, width: 28 },
+    },
+  ];
+
+  const infoParts: string[] = [];
+  if (partForm.quantity > 1) infoParts.push(`Qty: ${partForm.quantity}`);
+  if (partForm.vendor.trim()) infoParts.push(partForm.vendor.trim());
+  if (infoParts.length > 0) {
+    elements.push({
+      type: 'text',
+      content: infoParts.join(' · '),
+      options: { x: 160, y: 135, height: 25, width: 20 },
+    });
+  }
+
+  return elements;
+}
+
+async function printPartLabel() {
+  if (!partForm.partName.trim() || !partForm.partNumber.trim() || !partForm.barcode.trim()) return;
+  partPrinting.value = true;
+  partResult.value = null;
+
+  try {
+    const elements = composeLabelElements();
+    const copies = partForm.quantity > 1 ? partForm.quantity : undefined;
+    const result = await api.printLabel({ elements, copies });
+    partResult.value = result.success
+      ? `✅ Printed "${partForm.partName}"! ${result.queued ? '(Queued)' : ''}`
+      : `❌ Failed`;
+    refreshStats();
+  } catch (err: any) {
+    partResult.value = `❌ Error: ${err.message}`;
+  } finally {
+    partPrinting.value = false;
   }
 }
 
@@ -99,27 +175,91 @@ const formatUptime = (s: number) => {
         </div>
       </template>
       <div class="space-y-3">
-        <UInput
-          v-model="printLines"
-          placeholder="Type label text and press Enter..."
-          size="lg"
-          :disabled="printing"
-          @keyup.enter="quickPrint"
-        >
-          <template #trailing>
-            <UButton
-              icon="i-lucide-arrow-right"
-              size="sm"
-              color="primary"
-              :loading="printing"
-              :disabled="!printLines.trim()"
-              @click="quickPrint"
-            />
-          </template>
-        </UInput>
+        <div class="flex gap-2">
+          <UInput
+            v-model="printLines"
+            placeholder="Type label text and press Enter..."
+            size="lg"
+            :disabled="printing"
+            class="flex-1"
+            @keyup.enter="quickPrint"
+          />
+          <UButton
+            icon="i-lucide-arrow-right"
+            size="lg"
+            color="primary"
+            :loading="printing"
+            :disabled="!printLines.trim()"
+            @click="quickPrint"
+          />
+        </div>
         <p v-if="printResult" class="text-sm" :class="printResult.startsWith('✅') ? 'text-green-600' : 'text-red-600'">
           {{ printResult }}
         </p>
+      </div>
+    </UCard>
+
+    <!-- Quick Print Part Label -->
+    <UCard>
+      <template #header>
+        <div class="flex items-center gap-2">
+          <UIcon name="i-lucide-tag" class="text-primary-500" />
+          <span class="font-medium">Quick Print Part Label</span>
+        </div>
+      </template>
+      <div class="space-y-4">
+        <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          <UFormGroup label="Part Name" required>
+            <UInput
+              v-model="partForm.partName"
+              placeholder="FTS Lens Mount"
+              :disabled="partPrinting"
+            />
+          </UFormGroup>
+          <UFormGroup label="Part Number" required>
+            <UInput
+              v-model="partForm.partNumber"
+              placeholder="135853-002"
+              :disabled="partPrinting"
+            />
+          </UFormGroup>
+          <UFormGroup label="Barcode / Serial" required>
+            <UInput
+              v-model="partForm.barcode"
+              placeholder="TEST-PART-A-abc123"
+              :disabled="partPrinting"
+            />
+          </UFormGroup>
+          <UFormGroup label="Quantity">
+            <UInput
+              v-model.number="partForm.quantity"
+              type="number"
+              :min="1"
+              :max="50"
+              :disabled="partPrinting"
+            />
+          </UFormGroup>
+          <UFormGroup label="Vendor" class="sm:col-span-2">
+            <UInput
+              v-model="partForm.vendor"
+              placeholder="Optional vendor name"
+              :disabled="partPrinting"
+            />
+          </UFormGroup>
+        </div>
+        <div class="flex items-center gap-3">
+          <UButton
+            label="Print Label"
+            icon="i-lucide-printer"
+            color="primary"
+            :loading="partPrinting"
+            :disabled="!partForm.partName.trim() || !partForm.partNumber.trim() || !partForm.barcode.trim()"
+            @click="printPartLabel"
+          />
+          <p v-if="partResult" class="text-sm" :class="partResult.startsWith('✅') ? 'text-green-600' : 'text-red-600'">
+            {{ partResult }}
+          </p>
+        </div>
       </div>
     </UCard>
 

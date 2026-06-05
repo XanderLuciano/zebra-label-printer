@@ -45,6 +45,9 @@ export function useApi() {
     printZpl: (zpl: string) =>
       post<{ success: boolean; jobId: string; queued: boolean }>('/api/print/zpl', { zpl }),
 
+    printLabel: (data: { elements: Array<Record<string, unknown>>; copies?: number }) =>
+      post<{ success: boolean; jobId: string; queued: boolean }>('/api/print/label', data),
+
     // Jobs
     getJobs: (status?: string) =>
       get<{ jobs: any[]; stats: any }>(`/api/jobs${status ? `?status=${status}` : ''}`),
