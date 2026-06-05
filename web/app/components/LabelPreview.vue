@@ -19,6 +19,13 @@ interface LabelElement {
   };
 }
 
+interface ParsedLine {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 const props = withDefaults(defineProps<{
   elements: LabelElement[];
   widthDots?: number;
@@ -35,6 +42,18 @@ const props = withDefaults(defineProps<{
 const scale = computed(() => props.maxWidthPx / props.widthDots);
 const svgWidth = computed(() => props.widthDots * scale.value);
 const svgHeight = computed(() => props.heightDots * scale.value);
+
+// Parse raw ZPL ^FO{x},{y}^GB{w},{h},{t}... into line/rect data
+function parseRawZpl(zpl: string): ParsedLine | null {
+  const match = zpl.match(/\^FO(\d+),(\d+)\^GB(\d+),(\d+),(\d+)/);
+  if (!match) return null;
+  return {
+    x: parseInt(match[1]),
+    y: parseInt(match[2]),
+    width: parseInt(match[3]),
+    height: parseInt(match[4]),
+  };
+}
 </script>
 
 <template>
@@ -72,7 +91,7 @@ const svgHeight = computed(() => props.heightDots * scale.value);
           stroke="black"
           stroke-width="1"
         />
-        <!-- Simple QR pattern representation -->
+        <!-- QR finder patterns (top-left, top-right, bottom-left) -->
         <rect
           :x="(el.options?.x ?? 0) + 2"
           :y="(el.options?.y ?? 0) + 2"
@@ -103,17 +122,6 @@ const svgHeight = computed(() => props.heightDots * scale.value);
           fill="black"
           opacity="0.3"
         />
-        <!-- QR label text (small) -->
-        <text
-          :x="(el.options?.x ?? 0) + (el.options?.magnification ?? 5) * 10.5"
-          :y="(el.options?.y ?? 0) + (el.options?.magnification ?? 5) * 21 + 10"
-          font-size="8"
-          font-family="monospace"
-          fill="#666"
-          text-anchor="middle"
-        >
-          QR
-        </text>
       </g>
 
       <!-- Barcode placeholder -->
@@ -149,6 +157,16 @@ const svgHeight = computed(() => props.heightDots * scale.value);
           {{ el.content }}
         </text>
       </g>
+
+      <!-- Raw ZPL: render ^FO...^GB... as rectangles/lines -->
+      <rect
+        v-else-if="el.type === 'raw' && el.zpl && parseRawZpl(el.zpl)"
+        :x="parseRawZpl(el.zpl)!.x"
+        :y="parseRawZpl(el.zpl)!.y"
+        :width="parseRawZpl(el.zpl)!.width"
+        :height="parseRawZpl(el.zpl)!.height"
+        fill="black"
+      />
     </template>
   </svg>
 </template>
