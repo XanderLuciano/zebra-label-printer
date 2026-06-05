@@ -142,45 +142,76 @@ function composeSingleLabel(serial?: string): Array<Record<string, unknown>> {
 }
 
 // Compose a bag label (summary label with full quantity)
+// Layout: Part name full-width at top, horizontal separator,
+// then QR on left + remaining info on right, bottom separator
 function composeBagLabel(): Array<Record<string, unknown>> {
+  const labelWidth = 406;
+  const margin = 8;
+  const lineWidth = labelWidth - margin * 2; // 390
+
+  // Part name at top, full width centered
   const elements: Array<Record<string, unknown>> = [
-    {
-      type: 'qrcode',
-      content: partBarcode.value,
-      options: { x: qrX, y: qrY, magnification: qrMag },
-    },
     {
       type: 'text',
       content: partForm.partName,
-      options: { x: textX, y: textStartY, height: 30, width: 24 },
+      options: { x: margin, y: 8, height: 30, width: 24 },
     },
+    // Top horizontal separator after part name
     {
-      type: 'text',
-      content: partForm.partNumber,
-      options: { x: textX, y: textStartY + lineSpacing, height: 26, width: 22 },
+      type: 'raw',
+      zpl: `^FO${margin},42^GB${lineWidth},2,2,B^FS`,
     },
   ];
 
-  // Line 3: Rev | Vendor
-  const line3Parts: string[] = [];
-  if (partForm.rev.trim()) line3Parts.push(`Rev ${partForm.rev.trim()}`);
-  if (partForm.vendor.trim()) line3Parts.push(partForm.vendor.trim());
-  if (line3Parts.length > 0) {
+  // QR code on left below separator (smaller for bag label to fit more text)
+  const bagQrMag = 4;
+  const bagQrSize = 21 * bagQrMag; // 84 dots
+  const bagQrX = margin;
+  const bagQrY = 50;
+  elements.push({
+    type: 'qrcode',
+    content: partBarcode.value,
+    options: { x: bagQrX, y: bagQrY, magnification: bagQrMag },
+  });
+
+  // Text lines to the right of QR
+  const bagTextX = bagQrX + bagQrSize + 10; // 102
+  const bagTextStartY = 52;
+  const bagLineSpacing = 36;
+
+  // Line 1: Part Number
+  elements.push({
+    type: 'text',
+    content: partForm.partNumber,
+    options: { x: bagTextX, y: bagTextStartY, height: 26, width: 22 },
+  });
+
+  // Line 2: Rev | Vendor
+  const line2Parts: string[] = [];
+  if (partForm.rev.trim()) line2Parts.push(`Rev ${partForm.rev.trim()}`);
+  if (partForm.vendor.trim()) line2Parts.push(partForm.vendor.trim());
+  if (line2Parts.length > 0) {
     elements.push({
       type: 'text',
-      content: line3Parts.join(' | '),
-      options: { x: textX, y: textStartY + lineSpacing * 2, height: 24, width: 20 },
+      content: line2Parts.join(' | '),
+      options: { x: bagTextX, y: bagTextStartY + bagLineSpacing, height: 22, width: 18 },
     });
   }
 
-  // Line 4: Ticket | Qty (always show qty on bag label)
-  const line4Parts: string[] = [];
-  if (partForm.ticket.trim()) line4Parts.push(partForm.ticket.trim());
-  line4Parts.push(`Qty: ${partForm.quantity}`);
+  // Line 3: Ticket | Qty
+  const line3Parts: string[] = [];
+  if (partForm.ticket.trim()) line3Parts.push(partForm.ticket.trim());
+  line3Parts.push(`Qty: ${partForm.quantity}`);
   elements.push({
     type: 'text',
-    content: line4Parts.join(' | '),
-    options: { x: textX, y: textStartY + lineSpacing * 3, height: 24, width: 20 },
+    content: line3Parts.join(' | '),
+    options: { x: bagTextX, y: bagTextStartY + bagLineSpacing * 2, height: 22, width: 18 },
+  });
+
+  // Bottom horizontal separator
+  elements.push({
+    type: 'raw',
+    zpl: `^FO${margin},185^GB${lineWidth},2,2,B^FS`,
   });
 
   return elements;
