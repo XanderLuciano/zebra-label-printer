@@ -149,17 +149,17 @@ function composeBagLabel(): Array<Record<string, unknown>> {
   const margin = 8;
   const lineWidth = labelWidth - margin * 2; // 390
 
-  // Part name at top, full width centered
+  // Part name at top, full width
   const elements: Array<Record<string, unknown>> = [
     {
       type: 'text',
       content: partForm.partName,
-      options: { x: margin, y: 8, height: 30, width: 24 },
+      options: { x: margin, y: 14, height: 30, width: 24 },
     },
     // Top horizontal separator after part name
     {
       type: 'raw',
-      zpl: `^FO${margin},42^GB${lineWidth},2,2,B^FS`,
+      zpl: `^FO${margin},48^GB${lineWidth},2,2,B^FS`,
     },
   ];
 
@@ -167,7 +167,7 @@ function composeBagLabel(): Array<Record<string, unknown>> {
   const bagQrMag = 4;
   const bagQrSize = 21 * bagQrMag; // 84 dots
   const bagQrX = margin;
-  const bagQrY = 50;
+  const bagQrY = 56;
   elements.push({
     type: 'qrcode',
     content: partBarcode.value,
@@ -176,7 +176,7 @@ function composeBagLabel(): Array<Record<string, unknown>> {
 
   // Text lines to the right of QR
   const bagTextX = bagQrX + bagQrSize + 10; // 102
-  const bagTextStartY = 52;
+  const bagTextStartY = 58;
   const bagLineSpacing = 36;
 
   // Line 1: Part Number
