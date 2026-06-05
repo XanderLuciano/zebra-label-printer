@@ -5,6 +5,7 @@ import type { TableColumn } from '@nuxt/ui'
 const api = useApi();
 
 const UBadge = resolveComponent('UBadge')
+const UButton = resolveComponent('UButton')
 
 const statusFilter = ref<string[]>([]);
 const statusOptions = [
@@ -14,8 +15,9 @@ const statusOptions = [
   { label: 'Cancelled', value: 'cancelled' },
 ];
 
-// Fetch all jobs, then filter client-side for multi-select
+// Fetch all jobs and label size for preview
 const { data, refresh, status: fetchStatus } = useAsyncData('jobs', () => api.getJobs());
+const { data: labelSize } = useAsyncData('label-size', () => api.getLabelSize());
 
 const filteredJobs = computed(() => {
   const jobs = data.value?.jobs ?? [];
@@ -49,10 +51,30 @@ type PrintJob = {
   status: string;
   printer_name: string | null;
   request_data: string;
+  zpl_commands: string | null;
   created_at: string;
 };
 
 const columns: TableColumn<PrintJob>[] = [
+  {
+    id: 'expand',
+    cell: ({ row }) =>
+      h(UButton, {
+        color: 'neutral',
+        variant: 'ghost',
+        icon: 'i-lucide-chevron-down',
+        size: 'xs',
+        square: true,
+        'aria-label': 'Expand',
+        ui: {
+          leadingIcon: [
+            'transition-transform',
+            row.getIsExpanded() ? 'duration-200 rotate-180' : ''
+          ]
+        },
+        onClick: () => row.toggleExpanded()
+      })
+  },
   {
     accessorKey: 'id',
     header: 'Job ID',
@@ -83,11 +105,6 @@ const columns: TableColumn<PrintJob>[] = [
     }
   },
   {
-    accessorKey: 'printer_name',
-    header: 'Printer',
-    cell: ({ row }) => row.getValue('printer_name') || '—'
-  },
-  {
     accessorKey: 'created_at',
     header: 'Created',
     cell: ({ row }) => {
@@ -101,6 +118,52 @@ const columns: TableColumn<PrintJob>[] = [
     header: '',
   }
 ];
+
+// Parse elements from request_data for label preview
+function getPreviewElements(job: PrintJob): Array<any> | null {
+  if (job.job_type !== 'label') return null;
+  try {
+    const data = JSON.parse(job.request_data);
+    return data.elements ?? null;
+  } catch {
+    return null;
+  }
+}
+
+// For text/barcode/qr jobs, synthesize preview elements from request data
+function synthesizeElements(job: PrintJob): Array<any> | null {
+  try {
+    const data = JSON.parse(job.request_data);
+    switch (job.job_type) {
+      case 'text': {
+        const lines = data.lines as string[] ?? [];
+        return lines.map((line: string, i: number) => ({
+          type: 'text',
+          content: line,
+          options: { x: 20, y: 20 + i * 40, height: 30, width: 24 }
+        }));
+      }
+      case 'qr':
+        return [
+          { type: 'qrcode', content: data.data, options: { x: 20, y: 20, magnification: data.magnification ?? 5 } },
+          ...(data.text ? [{ type: 'text', content: data.text, options: { x: 20, y: 140, height: 20, width: 16 } }] : [])
+        ];
+      case 'barcode':
+        return [
+          { type: 'barcode', content: data.data, options: { x: 20, y: 20, type: data.type ?? 'CODE128', height: data.height ?? 80 } },
+          ...(data.text ? [{ type: 'text', content: data.text, options: { x: 20, y: 120, height: 20, width: 16 } }] : [])
+        ];
+      default:
+        return null;
+    }
+  } catch {
+    return null;
+  }
+}
+
+function getElements(job: PrintJob): Array<any> | null {
+  return getPreviewElements(job) ?? synthesizeElements(job);
+}
 
 // Reprint logic
 const reprinting = ref<string | null>(null);
@@ -142,6 +205,8 @@ async function reprint(job: PrintJob) {
     reprinting.value = null;
   }
 }
+
+const expanded = ref<Record<string, boolean>>({});
 </script>
 
 <template>
@@ -163,9 +228,11 @@ async function reprint(job: PrintJob) {
     </div>
 
     <UTable
+      v-model:expanded="expanded"
       :data="filteredJobs"
       :columns="columns"
       :loading="fetchStatus === 'pending'"
+      :ui="{ tr: 'data-[expanded=true]:bg-elevated/50' }"
     >
       <template #actions-cell="{ row }">
         <div class="flex items-center gap-2">
@@ -178,6 +245,31 @@ async function reprint(job: PrintJob) {
             :loading="reprinting === row.original.id"
             @click="reprint(row.original)"
           />
+        </div>
+      </template>
+
+      <template #expanded="{ row }">
+        <div class="p-4 flex gap-6 items-start">
+          <!-- Label Preview -->
+          <div v-if="getElements(row.original)" class="shrink-0">
+            <p class="text-xs text-gray-500 mb-1">Label Preview</p>
+            <LabelPreview
+              :elements="getElements(row.original)!"
+              :width-dots="labelSize?.current?.widthDots ?? 406"
+              :height-dots="labelSize?.current?.heightDots ?? 203"
+              :dpi="labelSize?.dpi ?? 203"
+              :max-width-px="300"
+            />
+          </div>
+          <div v-else class="text-sm text-gray-500 italic">
+            No preview available for raw ZPL jobs.
+          </div>
+
+          <!-- Request data -->
+          <div class="flex-1 min-w-0">
+            <p class="text-xs text-gray-500 mb-1">Request Data</p>
+            <pre class="text-xs bg-gray-50 dark:bg-gray-900 p-3 rounded overflow-x-auto max-h-48">{{ JSON.stringify(JSON.parse(row.original.request_data), null, 2) }}</pre>
+          </div>
         </div>
       </template>
     </UTable>

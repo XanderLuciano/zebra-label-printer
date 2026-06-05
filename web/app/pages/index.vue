@@ -47,6 +47,7 @@ const partForm = reactive({
   partNumber: '',
   rev: '',
   vendor: 'NRG',
+  ticket: '',
   quantity: 1,
   printPerPart: false,
 });
@@ -62,34 +63,48 @@ const partBarcode = computed(() => {
   return parts.join('-');
 });
 
+// Layout for 2x1" label (406 x 203 dots at 203 DPI)
+// QR code on left, 4 lines of text on right
 function composeLabelElements() {
   const elements: Array<Record<string, unknown>> = [
     {
       type: 'qrcode',
       content: partBarcode.value,
-      options: { x: 40, y: 50, magnification: 4 },
+      options: { x: 10, y: 15, magnification: 4 },
     },
     {
       type: 'text',
       content: partForm.partName,
-      options: { x: 160, y: 50, height: 35, width: 28 },
+      options: { x: 105, y: 15, height: 28, width: 22 },
     },
     {
       type: 'text',
       content: partForm.partNumber,
-      options: { x: 160, y: 95, height: 30, width: 28 },
+      options: { x: 105, y: 50, height: 24, width: 20 },
     },
   ];
 
-  const infoParts: string[] = [];
-  if (partForm.rev.trim()) infoParts.push(`Rev ${partForm.rev.trim()}`);
-  if (partForm.quantity > 1 && !partForm.printPerPart) infoParts.push(`Qty: ${partForm.quantity}`);
-  if (partForm.vendor.trim()) infoParts.push(partForm.vendor.trim());
-  if (infoParts.length > 0) {
+  // Line 3: Rev | Vendor
+  const line3Parts: string[] = [];
+  if (partForm.rev.trim()) line3Parts.push(`Rev ${partForm.rev.trim()}`);
+  if (partForm.vendor.trim()) line3Parts.push(partForm.vendor.trim());
+  if (line3Parts.length > 0) {
     elements.push({
       type: 'text',
-      content: infoParts.join(' | '),
-      options: { x: 160, y: 135, height: 25, width: 20 },
+      content: line3Parts.join(' | '),
+      options: { x: 105, y: 82, height: 22, width: 18 },
+    });
+  }
+
+  // Line 4: Ticket | Qty
+  const line4Parts: string[] = [];
+  if (partForm.ticket.trim()) line4Parts.push(partForm.ticket.trim());
+  if (partForm.quantity > 1 && !partForm.printPerPart) line4Parts.push(`Qty: ${partForm.quantity}`);
+  if (line4Parts.length > 0) {
+    elements.push({
+      type: 'text',
+      content: line4Parts.join(' | '),
+      options: { x: 105, y: 112, height: 22, width: 18 },
     });
   }
 
@@ -115,7 +130,7 @@ async function printPartLabel() {
     const result = await api.printLabel({ elements });
     const copies = partForm.printPerPart ? partForm.quantity : 1;
     partResult.value = result.success
-      ? `✅ Printed "${partForm.partName}"${copies > 1 ? ` ×${copies}` : ''}! ${result.queued ? '(Queued)' : ''}`
+      ? `✅ Printed "${partForm.partName}"${copies > 1 ? ` x${copies}` : ''}! ${result.queued ? '(Queued)' : ''}`
       : `❌ Failed`;
     refreshStats();
   } catch (err: any) {
@@ -229,12 +244,13 @@ const formatUptime = (s: number) => {
             <span class="font-medium">Quick Print Part Label</span>
           </div>
         </template>
-        <div class="space-y-4">
-          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-            <UFormGroup label="Part Name" required>
+        <div class="space-y-3">
+          <div class="grid grid-cols-2 sm:grid-cols-3 gap-2">
+            <UFormGroup label="Part Name" required class="col-span-2 sm:col-span-2">
               <UInput
                 v-model="partForm.partName"
                 placeholder="FTS Lens Mount"
+                size="sm"
                 :disabled="partPrinting"
               />
             </UFormGroup>
@@ -242,6 +258,7 @@ const formatUptime = (s: number) => {
               <UInput
                 v-model="partForm.partNumber"
                 placeholder="135853-002"
+                size="sm"
                 :disabled="partPrinting"
               />
             </UFormGroup>
@@ -249,6 +266,7 @@ const formatUptime = (s: number) => {
               <UInput
                 v-model="partForm.rev"
                 placeholder="A"
+                size="sm"
                 :disabled="partPrinting"
               />
             </UFormGroup>
@@ -256,22 +274,33 @@ const formatUptime = (s: number) => {
               <UInput
                 v-model="partForm.vendor"
                 placeholder="NRG"
+                size="sm"
                 :disabled="partPrinting"
               />
             </UFormGroup>
-            <UFormGroup label="Quantity">
+            <UFormGroup label="Ticket #">
+              <UInput
+                v-model="partForm.ticket"
+                placeholder="PI-8088"
+                size="sm"
+                :disabled="partPrinting"
+              />
+            </UFormGroup>
+            <UFormGroup label="Qty">
               <UInput
                 v-model.number="partForm.quantity"
                 type="number"
                 :min="1"
                 :max="50"
+                size="sm"
                 :disabled="partPrinting"
               />
             </UFormGroup>
-            <UFormGroup label="Barcode (auto)">
+            <UFormGroup label="Barcode (auto)" class="col-span-2">
               <UInput
                 :model-value="partBarcode"
                 disabled
+                size="sm"
                 placeholder="partNumber-rev-vendor"
               />
             </UFormGroup>
@@ -288,6 +317,7 @@ const formatUptime = (s: number) => {
               label="Print Label"
               icon="i-lucide-printer"
               color="primary"
+              size="sm"
               :loading="partPrinting"
               :disabled="!partForm.partName.trim() || !partForm.partNumber.trim()"
               @click="printPartLabel"
