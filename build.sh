@@ -12,11 +12,13 @@ echo ""
 # 1. Build the TypeScript library + API server
 echo "📦 Building backend..."
 cd "$ROOT"
+npm ci
 npm run build
 
 # 2. Build the Nuxt web UI (SPA mode)
 echo "🎨 Building web UI (SPA)..."
 cd "$ROOT/web"
+npm ci
 npx nuxt build
 
 # 3. Capture SPA index.html from Nitro
@@ -36,6 +38,9 @@ mkdir -p "$DIST/data"
 
 # Backend JS
 cp -r "$ROOT/dist" "$DIST/dist"
+
+# Drizzle migrations (needed at runtime for auto-migration)
+cp -r "$ROOT/drizzle" "$DIST/drizzle"
 
 # Web UI static files
 cp -r "$ROOT/web/.output/public" "$DIST/public"
