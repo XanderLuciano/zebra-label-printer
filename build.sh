@@ -12,13 +12,13 @@ echo ""
 # 1. Build the TypeScript library + API server
 echo "📦 Building backend..."
 cd "$ROOT"
-npm ci
+npm ci --include=dev
 npm run build
 
 # 2. Build the Nuxt web UI (SPA mode)
 echo "🎨 Building web UI (SPA)..."
 cd "$ROOT/web"
-npm ci
+npm ci --include=dev
 npx nuxt build
 
 # 3. Capture SPA index.html from Nitro
