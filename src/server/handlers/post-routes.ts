@@ -5,11 +5,14 @@
  * jobs are persisted to SQLite and automatically retried if the printer is offline.
  */
 
+import { eq } from 'drizzle-orm'
 import type { ZodSchema } from 'zod'
 import type { Handler } from '../router'
 import { json, readBody, validate, checkAuth } from '../helpers'
 import { ZPLBuilder, textLabel, barcodeLabel, qrLabel } from '../../zpl'
 import { getLabelSize } from '../../db/settings-repo'
+import { getDb } from '../../db/database'
+import { printJobs } from '../../db/schema'
 import {
   textLabelSchema,
   barcodeLabelSchema,
@@ -237,8 +240,7 @@ export function clearJobsHandler(apiKey: string): Handler {
           } catch { /* empty */ }
         }
         // Hard delete cancelled jobs
-        const db = (await import('../../db/database')).getDb()
-        const result = db.prepare('DELETE FROM print_jobs WHERE status = ?').run('cancelled')
+        const result = getDb().delete(printJobs).where(eq(printJobs.status, 'cancelled')).run()
         count += result.changes
       }
     }

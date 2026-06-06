@@ -44,9 +44,18 @@ import {
   printSerialHandler,
   clearJobsHandler
 } from './handlers/post-routes'
-import { closeDb } from '../db/database'
+import { closeDb, getDb } from '../db/database'
+import { printJobs } from '../db/schema'
+import { eq } from 'drizzle-orm'
 import { checkForUpdates } from '../updater'
 import type { WebhookConfig } from '../types'
+import {
+  DEFAULT_HTTP_PORT,
+  DEFAULT_TCP_PORT,
+  DEFAULT_HOST,
+  UPDATE_CHECK_INTERVAL_MS,
+  INITIAL_UPDATE_DELAY_MS
+} from '../constants'
 
 // ─── Server ──────────────────────────────────────────────────────────────────
 
@@ -60,11 +69,11 @@ export class WebhookServer {
 
   constructor(config: WebhookConfig = {}) {
     this.config = {
-      port: config.port ?? 3420,
-      host: config.host ?? '0.0.0.0',
+      port: config.port ?? DEFAULT_HTTP_PORT,
+      host: config.host ?? DEFAULT_HOST,
       apiKey: config.apiKey ?? '',
       defaultPrinter: config.defaultPrinter ?? '',
-      tcpPort: config.tcpPort ?? 9100
+      tcpPort: config.tcpPort ?? DEFAULT_TCP_PORT
     }
     this.routes = new Map() // Built in start()
   }
@@ -160,9 +169,8 @@ export class WebhookServer {
       const parts = pathname.split('/')
       const jobId = parts[3]
       return async (_req, res, _printer) => {
-        const { getDb } = await import('../db/database')
         try {
-          getDb().prepare('DELETE FROM print_jobs WHERE id = ?').run(jobId)
+          getDb().delete(printJobs).where(eq(printJobs.id, jobId)).run()
           json(res, { success: true })
         } catch {
           json(res, { error: 'Failed to delete job' }, 500)
@@ -259,8 +267,8 @@ export class WebhookServer {
         printRoutes(this.routes)
         console.log()
 
-        // Start raw TCP passthrough (Zebra network protocol, default port 9100)
-        const tcpPort = this.config.tcpPort ?? parseInt(process.env.ZEBRA_TCP_PORT || '9100', 10)
+        // Start raw TCP passthrough (Zebra network protocol)
+        const tcpPort = this.config.tcpPort ?? parseInt(process.env.ZEBRA_TCP_PORT || String(DEFAULT_TCP_PORT), 10)
         if (tcpPort > 0) {
           const tcpHost = this.config.host
           try {
@@ -342,12 +350,12 @@ export class WebhookServer {
 
     this.updateTimer = setInterval(() => {
       checkForUpdates(0).catch(() => { /* silent */ })
-    }, 24 * 60 * 60 * 1000)
+    }, UPDATE_CHECK_INTERVAL_MS)
 
-    // Run an initial check after 30s
+    // Run an initial check after startup delay
     setTimeout(() => {
       checkForUpdates(0).catch(() => { /* silent */ })
-    }, 30000)
+    }, INITIAL_UPDATE_DELAY_MS)
   }
 
   /** Stop the HTTP server, queue processor, and close the database. */
@@ -400,7 +408,7 @@ export async function startServer(config: WebhookConfig = {}): Promise<WebhookSe
 
 // Run directly if executed as main module
 if (require.main === module) {
-  const port = parseInt(process.env.PORT || '3420', 10)
+  const port = parseInt(process.env.PORT || String(DEFAULT_HTTP_PORT), 10)
   const printerName = process.env.ZEBRA_PRINTER || undefined
   const apiKey = process.env.ZEBRA_API_KEY || ''
 
