@@ -62,9 +62,6 @@ echo "━━━ Step 2/4: Package ━━━"
 if [ -f "package.json" ] && [ -f "build.sh" ]; then
   info "Local source detected — building from source..."
   bash build.sh
-  cd dist-zebra
-  npm ci --omit=dev
-  cd ..
   INSTALL_DIR="$(pwd)"
 else
   info "Installing from GitHub..."
@@ -78,8 +75,6 @@ else
   fi
   cd "$INSTALL_DIR"
   bash build.sh
-  cd dist-zebra
-  npm ci --omit=dev
 fi
 
 NODE_BIN="$(which node)"
