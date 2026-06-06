@@ -42,7 +42,12 @@ const jobTypeLabels: Record<string, string> = {
 };
 
 function formatDate(d: string) {
-  return new Date(d + 'Z').toLocaleString();
+  if (!d) return '—';
+  // SQLite datetime format: "YYYY-MM-DD HH:MM:SS" — needs T separator for Date parsing
+  const normalized = d.includes('T') ? d : d.replace(' ', 'T');
+  const date = new Date(normalized + (normalized.endsWith('Z') ? '' : 'Z'));
+  if (isNaN(date.getTime())) return d; // Fallback to raw string if still invalid
+  return date.toLocaleString();
 }
 
 type PrintJob = {

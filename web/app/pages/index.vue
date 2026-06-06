@@ -49,12 +49,28 @@ const partForm = reactive({
   vendor: 'NRG',
   ticket: '',
   quantity: 1,
-  printPerPart: false,
-  serialize: false,
+  printPerPart: true,
+  serialize: true,
   serialStart: 1,
 });
 const partPrinting = ref(false);
 const partResult = ref<string | null>(null);
+
+// Persist printPerPart and serialize settings
+const { data: savedSettings } = useAsyncData('part-settings', () => api.getSettings());
+watch(savedSettings, (settings) => {
+  if (settings) {
+    if (settings.print_per_part !== undefined) partForm.printPerPart = settings.print_per_part !== 'false';
+    if (settings.serialize_labels !== undefined) partForm.serialize = settings.serialize_labels !== 'false';
+  }
+}, { immediate: true });
+
+watch(() => partForm.printPerPart, (val) => {
+  api.updateSettings({ print_per_part: String(val) });
+});
+watch(() => partForm.serialize, (val) => {
+  api.updateSettings({ serialize_labels: String(val) });
+});
 
 // Auto-generate barcode from partNumber-rev-vendor
 const partBarcode = computed(() => {
