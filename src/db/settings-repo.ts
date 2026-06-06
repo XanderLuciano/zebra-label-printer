@@ -1,21 +1,23 @@
 /**
- * Settings repository — key/value config store backed by SQLite.
+ * Settings repository — key/value config store backed by Drizzle ORM.
  */
 
+import { eq, sql, desc } from 'drizzle-orm'
 import { getDb } from './database'
+import { settings, printerEvents } from './schema'
+import type { PrinterEventType } from '../constants'
+import { DEFAULT_EVENT_LIMIT, MAX_RECENT_SIZES } from '../constants'
+import type { LabelSize } from '../types'
 
-interface SettingRow {
-  key: string;
-  value: string;
-  updated_at: string;
-}
+export type { PrinterEventType }
 
 /** Get a setting value (returns default if not set) */
 export function getSetting(key: string, defaultValue?: string): string | null {
   const db = getDb()
-  const row = db.prepare('SELECT value FROM settings WHERE key = ?').get(key) as
-    | { value: string }
-    | undefined
+  const row = db.select({ value: settings.value })
+    .from(settings)
+    .where(eq(settings.key, key))
+    .get()
   return row?.value ?? defaultValue ?? null
 }
 
@@ -49,16 +51,23 @@ export function getJsonSetting<T>(key: string, defaultValue: T): T {
 export function setSetting(key: string, value: string | number | boolean | object): void {
   const db = getDb()
   const val = typeof value === 'object' ? JSON.stringify(value) : String(value)
-  db.prepare(`
-    INSERT INTO settings (key, value) VALUES (?, ?)
-    ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = datetime('now')
-  `).run(key, val)
+
+  db.insert(settings)
+    .values({ key, value: val })
+    .onConflictDoUpdate({
+      target: settings.key,
+      set: {
+        value: val,
+        updatedAt: sql`datetime('now')`
+      }
+    })
+    .run()
 }
 
 /** Get all settings as a record */
 export function getAllSettings(): Record<string, string> {
   const db = getDb()
-  const rows = db.prepare('SELECT key, value FROM settings ORDER BY key').all() as SettingRow[]
+  const rows = db.select().from(settings).all()
   const result: Record<string, string> = {}
   for (const row of rows) {
     result[row.key] = row.value
@@ -69,12 +78,10 @@ export function getAllSettings(): Record<string, string> {
 /** Delete a setting */
 export function deleteSetting(key: string): void {
   const db = getDb()
-  db.prepare('DELETE FROM settings WHERE key = ?').run(key)
+  db.delete(settings).where(eq(settings.key, key)).run()
 }
 
 // ─── Printer events ──────────────────────────────────────────────────────────
-
-export type PrinterEventType = 'connected' | 'disconnected' | 'error' | 'recovered'
 
 export interface PrinterEvent {
   id: number;
@@ -91,22 +98,32 @@ export function recordPrinterEvent(
   message?: string
 ): void {
   const db = getDb()
-  db.prepare(
-    'INSERT INTO printer_events (printer_name, event_type, message) VALUES (?, ?, ?)'
-  ).run(printerName, eventType, message ?? null)
+  db.insert(printerEvents).values({
+    printerName,
+    eventType,
+    message: message ?? null
+  }).run()
 }
 
 /** Get recent printer events */
-export function getPrinterEvents(limit = 50): PrinterEvent[] {
+export function getPrinterEvents(limit = DEFAULT_EVENT_LIMIT): PrinterEvent[] {
   const db = getDb()
-  return db
-    .prepare('SELECT * FROM printer_events ORDER BY created_at DESC LIMIT ?')
-    .all(limit) as PrinterEvent[]
+  const rows = db.select()
+    .from(printerEvents)
+    .orderBy(desc(printerEvents.createdAt))
+    .limit(limit)
+    .all()
+
+  return rows.map(row => ({
+    id: row.id,
+    printer_name: row.printerName,
+    event_type: row.eventType as PrinterEventType,
+    message: row.message,
+    created_at: row.createdAt
+  }))
 }
 
 // ─── Label size management ───────────────────────────────────────────────────
-
-import type { LabelSize } from '../types'
 
 /** Predefined label sizes (inches → dots at 203 DPI) */
 export const STANDARD_SIZES: LabelSize[] = [
@@ -160,5 +177,5 @@ function addRecentSize(size: LabelSize): void {
   const filtered = recents.filter(s => `${s.widthDots}x${s.heightDots}` !== key)
   // Add to front, keep last 10
   filtered.unshift(size)
-  setSetting('recent_label_sizes', filtered.slice(0, 10))
+  setSetting('recent_label_sizes', filtered.slice(0, MAX_RECENT_SIZES))
 }

@@ -21,6 +21,9 @@
     "test:watch": "vitest",
     "print:test": "tsx src/cli.ts print-test",
     "discover": "tsx src/cli.ts discover",
+    "db:generate": "drizzle-kit generate",
+    "db:migrate": "drizzle-kit migrate",
+    "db:studio": "drizzle-kit studio",
     "prepublishOnly": "npm run build"
   },
   "keywords": [
@@ -42,6 +45,7 @@
     "@stylistic/eslint-plugin": "^5.10.0",
     "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.0.0",
+    "drizzle-kit": "^0.31.10",
     "eslint": "^10.2.1",
     "tsx": "^4.0.0",
     "typescript": "^5.5.0",
@@ -53,6 +57,7 @@
   },
   "dependencies": {
     "better-sqlite3": "^12.9.0",
+    "drizzle-orm": "^0.45.2",
     "zod": "^4.3.6"
   }
 }

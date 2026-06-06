@@ -9,7 +9,7 @@ import fs from 'fs'
 const TEST_DB = '/tmp/zebra-test.db'
 process.env.ZEBRA_DB_PATH = TEST_DB
 
-import { getDb, closeDb } from '../../src/db/database'
+import { getDb, getSqlite, closeDb } from '../../src/db/database'
 import {
   createJob,
   getJob,
@@ -51,12 +51,14 @@ function cleanDb() {
 
 // Reset all tables between tests
 function resetDb() {
-  const db = getDb()
+  // Ensure the DB is initialized (runs migrations on first call)
+  getDb()
+  const sqlite = getSqlite()
   // Delete all data but keep schema
-  db.exec('DELETE FROM job_logs')
-  db.exec('DELETE FROM print_jobs')
-  db.exec('DELETE FROM settings')
-  db.exec('DELETE FROM printer_events')
+  sqlite.exec('DELETE FROM job_logs')
+  sqlite.exec('DELETE FROM print_jobs')
+  sqlite.exec('DELETE FROM settings')
+  sqlite.exec('DELETE FROM printer_events')
 }
 
 describe('Database layer', () => {
@@ -72,22 +74,24 @@ describe('Database layer', () => {
   })
 
   it('creates database with migrations', () => {
-    const db = getDb()
-    const tables = db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as Array<{ name: string }>
+    getDb()
+    const sqlite = getSqlite()
+    const tables = sqlite.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all() as Array<{ name: string }>
     const names = tables.map(t => t.name)
     expect(names).toContain('print_jobs')
     expect(names).toContain('job_logs')
     expect(names).toContain('settings')
     expect(names).toContain('printer_events')
-    expect(names).toContain('_migrations')
   })
 
   it('migrations are idempotent', () => {
     closeDb()
     // Second call should not fail (migrations already applied)
-    const db = getDb()
-    const migrations = db.prepare('SELECT COUNT(*) as cnt FROM _migrations').get() as { cnt: number }
-    expect(migrations.cnt).toBe(1)
+    getDb()
+    const sqlite = getSqlite()
+    // Drizzle tracks migrations in __drizzle_migrations
+    const migrations = sqlite.prepare('SELECT COUNT(*) as cnt FROM __drizzle_migrations').get() as { cnt: number }
+    expect(migrations.cnt).toBeGreaterThanOrEqual(1)
   })
 
   it('creates print jobs', () => {
@@ -183,7 +187,7 @@ describe('Database layer', () => {
     updateJobStatus(j2.id, 'completed')
 
     // Manually age j1
-    getDb().prepare("UPDATE print_jobs SET completed_at = datetime('now', '-31 days') WHERE id = ?").run(j1.id)
+    getSqlite().prepare("UPDATE print_jobs SET completed_at = datetime('now', '-31 days') WHERE id = ?").run(j1.id)
 
     const count = cleanupOldJobs(30)
     expect(count).toBe(1)

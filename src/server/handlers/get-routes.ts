@@ -8,7 +8,14 @@ import { OPENAPI_SPEC, swaggerUiHtml } from '../../openapi'
 import { listJobs, getJob, getJobLogs, getJobStats, countPendingJobs } from '../../db/print-job-repo'
 import { getAllSettings, getPrinterEvents, getLabelSize, getRecentSizes, setLabelSize, STANDARD_SIZES } from '../../db/settings-repo'
 import { checkForUpdates } from '../../updater'
-import { getDb } from '../../db/database'
+import { getSqlite } from '../../db/database'
+import {
+  JOB_STATUSES,
+  DEFAULT_DPI,
+  MIN_LABEL_WIDTH_DOTS,
+  MIN_LABEL_HEIGHT_DOTS,
+  UPDATE_CACHE_MINUTES
+} from '../../constants'
 import type { PrintQueue } from '../../queue'
 
 /** GET /api/health — server and printer status */
@@ -49,9 +56,8 @@ export function jobsListHandler(apiKey: string): Handler {
     const offset = parseInt(url.searchParams.get('offset') ?? '0', 10)
 
     // Validate status if provided
-    const validStatuses = ['pending', 'printing', 'completed', 'failed', 'cancelled']
-    if (status && !validStatuses.includes(status)) {
-      json(res, { error: `Invalid status. Must be one of: ${validStatuses.join(', ')}` }, 400)
+    if (status && !JOB_STATUSES.includes(status as typeof JOB_STATUSES[number])) {
+      json(res, { error: `Invalid status. Must be one of: ${JOB_STATUSES.join(', ')}` }, 400)
       return
     }
 
@@ -117,8 +123,8 @@ export function debugHandler(apiKey: string, getQueue: () => PrintQueue | null):
   return async (req, res, printer) => {
     if (!checkAuth(req, res, apiKey)) return
 
-    const db = getDb()
-    const dbSize = db.prepare('SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()').get() as { size: number }
+    const sqlite = getSqlite()
+    const dbSize = sqlite.prepare('SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()').get() as { size: number }
 
     const info = {
       printer: {
@@ -130,7 +136,7 @@ export function debugHandler(apiKey: string, getQueue: () => PrintQueue | null):
         processorRunning: getQueue() !== null
       },
       database: {
-        path: db.name,
+        path: sqlite.name,
         sizeBytes: dbSize.size,
         sizeFormatted: `${(dbSize.size / 1024 / 1024).toFixed(2)} MB`,
         stats: getJobStats()
@@ -195,7 +201,7 @@ export function labelSizeGetHandler(apiKey: string): Handler {
       current,
       recents,
       standards,
-      dpi: 203
+      dpi: DEFAULT_DPI
     })
   }
 }
@@ -217,17 +223,17 @@ export function labelSizePutHandler(apiKey: string): Handler {
     const widthDots = Number(data.widthDots)
     const heightDots = Number(data.heightDots)
 
-    if (!widthDots || !heightDots || widthDots < 100 || heightDots < 50) {
-      json(res, { error: 'widthDots and heightDots required (min 100×50 dots)' }, 400)
+    if (!widthDots || !heightDots || widthDots < MIN_LABEL_WIDTH_DOTS || heightDots < MIN_LABEL_HEIGHT_DOTS) {
+      json(res, { error: `widthDots and heightDots required (min ${MIN_LABEL_WIDTH_DOTS}×${MIN_LABEL_HEIGHT_DOTS} dots)` }, 400)
       return
     }
 
     const size = {
-      widthInches: Number((widthDots / 203).toFixed(2)),
-      heightInches: Number((heightDots / 203).toFixed(2)),
+      widthInches: Number((widthDots / DEFAULT_DPI).toFixed(2)),
+      heightInches: Number((heightDots / DEFAULT_DPI).toFixed(2)),
       widthDots,
       heightDots,
-      name: data.name as string || `${(widthDots / 203).toFixed(1)}×${(heightDots / 203).toFixed(1)}"`
+      name: data.name as string || `${(widthDots / DEFAULT_DPI).toFixed(1)}×${(heightDots / DEFAULT_DPI).toFixed(1)}"`
     }
 
     setLabelSize(size)
@@ -241,7 +247,7 @@ export function labelSizePutHandler(apiKey: string): Handler {
 export function versionHandler(apiKey: string): Handler {
   return async (req, res, _printer) => {
     if (!checkAuth(req, res, apiKey)) return
-    const info = await checkForUpdates(60)
+    const info = await checkForUpdates(UPDATE_CACHE_MINUTES)
     json(res, info)
   }
 }
