@@ -52,7 +52,7 @@ const partForm = reactive({
   printPerPart: true,
   serialize: true,
   serialStart: 1,
-  bagLabelCount: 1,
+  bagLabelCount: 0,
 });
 const partPrinting = ref(false);
 const partResult = ref<string | null>(null);
@@ -91,6 +91,16 @@ watch(() => partForm.serialize, (val) => {
 const showBagLabels = computed(() =>
   partForm.serialize || (partForm.printPerPart && partForm.quantity > 1)
 );
+
+// Default bag label count based on quantity: none for a single part, one for multiples.
+// Users can still override the value manually.
+watch(() => partForm.quantity, (qty, prevQty) => {
+  if (qty > 1 && prevQty <= 1 && partForm.bagLabelCount === 0) {
+    partForm.bagLabelCount = 1;
+  } else if (qty <= 1 && prevQty > 1 && partForm.bagLabelCount === 1) {
+    partForm.bagLabelCount = 0;
+  }
+});
 
 // Format serial number: VENDOR-001
 function formatSerial(index: number): string {
