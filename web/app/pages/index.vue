@@ -52,6 +52,7 @@ const partForm = reactive({
   printPerPart: true,
   serialize: true,
   serialStart: 1,
+  bagLabelCount: 1,
 });
 const partPrinting = ref(false);
 const partResult = ref<string | null>(null);
@@ -85,6 +86,11 @@ const partBarcode = computed(() => {
 watch(() => partForm.serialize, (val) => {
   if (val) partForm.printPerPart = true;
 });
+
+// Show bag label option when producing multiple individual labels
+const showBagLabels = computed(() =>
+  partForm.serialize || (partForm.printPerPart && partForm.quantity > 1)
+);
 
 // Format serial number: VENDOR-001
 function formatSerial(index: number): string {
@@ -239,32 +245,37 @@ async function printPartLabel() {
   partResult.value = null;
 
   try {
-    if (partForm.serialize && partForm.quantity > 1) {
-      // Print individual serialized labels + 1 bag label
-      let printed = 0;
+    const bagCount = Math.max(0, partForm.bagLabelCount);
+
+    if (partForm.serialize) {
+      // Print individual serialized labels (works for any quantity, including 1)
       for (let i = 0; i < partForm.quantity; i++) {
         const serial = formatSerial(i);
         const elements = composeSingleLabel(serial);
         await api.printLabel({ elements });
-        printed++;
       }
-      // Print bag label
+      // Print bag label(s)
       const bagElements = composeBagLabel();
-      await api.printLabel({ elements: bagElements });
-      printed++;
+      for (let i = 0; i < bagCount; i++) {
+        await api.printLabel({ elements: bagElements });
+      }
 
-      partResult.value = `✅ Printed ${partForm.quantity} serialized labels + 1 bag label (${printed} total)`;
+      const bagMsg = bagCount > 0 ? ` + ${bagCount} bag label${bagCount > 1 ? 's' : ''}` : '';
+      partResult.value = `✅ Printed ${partForm.quantity} serialized label${partForm.quantity > 1 ? 's' : ''}${bagMsg}`;
     } else if (partForm.printPerPart && partForm.quantity > 1) {
-      // Print identical individual labels via ^PQ + 1 bag label
+      // Print identical individual labels via ^PQ
       const elements = composeSingleLabel();
       elements.push({ type: 'raw', zpl: `^PQ${partForm.quantity}` });
       await api.printLabel({ elements });
 
-      // Print bag label
+      // Print bag label(s)
       const bagElements = composeBagLabel();
-      await api.printLabel({ elements: bagElements });
+      for (let i = 0; i < bagCount; i++) {
+        await api.printLabel({ elements: bagElements });
+      }
 
-      partResult.value = `✅ Printed ${partForm.quantity} part labels + 1 bag label`;
+      const bagMsg = bagCount > 0 ? ` + ${bagCount} bag label${bagCount > 1 ? 's' : ''}` : '';
+      partResult.value = `✅ Printed ${partForm.quantity} part labels${bagMsg}`;
     } else {
       // Single label (or qty shown on label)
       const elements = composeSingleLabel();
@@ -444,14 +455,14 @@ const formatUptime = (s: number) => {
               />
             </UFormField>
           </div>
-          <div v-if="partForm.quantity > 1" class="space-y-2">
-            <div class="flex items-center gap-2">
+          <div class="space-y-2">
+            <div v-if="partForm.quantity > 1" class="flex items-center gap-2">
               <UCheckbox
                 v-model="partForm.printPerPart"
                 label="Print 1 label per part"
                 :disabled="partForm.serialize"
               />
-              <span class="text-xs text-gray-500">({{ partForm.quantity }} labels + 1 bag label)</span>
+              <span class="text-xs text-gray-500">({{ partForm.quantity }} labels)</span>
             </div>
             <div class="flex items-center gap-4">
               <UCheckbox
@@ -468,9 +479,26 @@ const formatUptime = (s: number) => {
                   class="w-16"
                 />
                 <span class="text-xs text-gray-500">
-                  ({{ formatSerial(0) }} ... {{ formatSerial(partForm.quantity - 1) }})
+                  <template v-if="partForm.quantity > 1">
+                    ({{ formatSerial(0) }} ... {{ formatSerial(partForm.quantity - 1) }})
+                  </template>
+                  <template v-else>
+                    ({{ formatSerial(0) }})
+                  </template>
                 </span>
               </div>
+            </div>
+            <div v-if="showBagLabels" class="flex items-center gap-2">
+              <span class="text-xs text-gray-500">Bag labels:</span>
+              <UInput
+                v-model.number="partForm.bagLabelCount"
+                type="number"
+                :min="0"
+                :max="20"
+                size="xs"
+                class="w-16"
+              />
+              <span class="text-xs text-gray-500">(summary with total qty)</span>
             </div>
           </div>
           <div class="flex items-center gap-3">
