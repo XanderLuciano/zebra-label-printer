@@ -14,6 +14,7 @@ import {
   createJob,
   getJob,
   updateJobStatus,
+  claimJob,
   listJobs,
   getJobStats,
   getJobLogs,
@@ -169,6 +170,24 @@ describe('Database layer', () => {
     const next = getNextPendingJob()
     expect(next).toBeTruthy()
     expect(next!.status).toBe('pending')
+  })
+
+  it('claimJob atomically claims a pending job exactly once', () => {
+    const job = createJob('text', { lines: ['Serial 001'] })
+
+    // First claim wins
+    expect(claimJob(job.id)).toBe(true)
+    expect(getJob(job.id)!.status).toBe('printing')
+
+    // Second claim fails — job is no longer pending. This prevents the
+    // submit()/processNext() race that caused duplicate serial prints.
+    expect(claimJob(job.id)).toBe(false)
+  })
+
+  it('claimJob returns false for non-pending jobs', () => {
+    const job = createJob('text', { lines: ['Done'] })
+    updateJobStatus(job.id, 'completed')
+    expect(claimJob(job.id)).toBe(false)
   })
 
   it('cancels pending jobs', () => {

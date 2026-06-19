@@ -137,6 +137,30 @@ export function updateJobStatus(
   addJobLog(id, 'info', `Status → ${status}`)
 }
 
+/**
+ * Atomically claim a pending job for printing.
+ *
+ * Uses a conditional UPDATE (WHERE status = 'pending') so that only one
+ * caller can win the claim. This prevents the race where submit() and the
+ * background queue processor both grab the same pending job and print it
+ * twice (which manifests as duplicate serial numbers).
+ *
+ * @returns true if this caller claimed the job, false if it was already claimed.
+ */
+export function claimJob(id: string): boolean {
+  const db = getDb()
+  const result = db.update(printJobs)
+    .set({ status: 'printing', startedAt: sql`datetime('now')` })
+    .where(and(eq(printJobs.id, id), eq(printJobs.status, 'pending')))
+    .run()
+
+  if (result.changes > 0) {
+    addJobLog(id, 'info', 'Status → printing')
+    return true
+  }
+  return false
+}
+
 /** Set the ZPL commands for a job */
 export function setJobZpl(id: string, zpl: string): void {
   const db = getDb()

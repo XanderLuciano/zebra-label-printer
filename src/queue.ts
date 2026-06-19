@@ -16,6 +16,7 @@ import {
   createJob,
   getNextPendingJob,
   updateJobStatus,
+  claimJob,
   setJobZpl,
   countPendingJobs,
   addJobLog,
@@ -58,8 +59,14 @@ export class PrintQueue {
     // Try immediate print
     const isReady = await this.printer.isReady()
     if (isReady) {
+      // Atomically claim the job so the background processor can't also grab it.
+      // Without this, submit() and processNext() can race and print the same
+      // job (and serial number) twice.
+      if (!claimJob(job.id)) {
+        // Already claimed by the background processor — it will handle printing.
+        return { success: true, jobId: job.id, queued: true }
+      }
       try {
-        updateJobStatus(job.id, 'printing')
         const zpl = zplGenerator()
         setJobZpl(job.id, zpl)
 
@@ -136,8 +143,11 @@ export class PrintQueue {
       const job = getNextPendingJob()
       if (!job) return false
 
+      // Atomically claim the job. If another caller (e.g. submit) already
+      // claimed it between getNextPendingJob() and here, skip it.
+      if (!claimJob(job.id)) return false
+
       addJobLog(job.id, 'info', 'Processing from queue')
-      updateJobStatus(job.id, 'printing')
 
       // Generate ZPL if not already done
       let zpl = job.zpl_commands
