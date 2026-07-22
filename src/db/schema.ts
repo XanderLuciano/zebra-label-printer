@@ -50,6 +50,19 @@ export const settings = sqliteTable('settings', {
   updatedAt: text('updated_at').notNull().default("(datetime('now'))")
 })
 
+// ─── Label Templates ─────────────────────────────────────────────────────────
+
+export const labelTemplates = sqliteTable('label_templates', {
+  id: text('id').primaryKey(),
+  name: text('name').notNull(),
+  description: text('description'),
+  data: text('data').notNull(),                      // JSON: full template definition
+  createdAt: text('created_at').notNull().default("(datetime('now'))"),
+  updatedAt: text('updated_at').notNull().default("(datetime('now'))")
+}, table => [
+  index('idx_label_templates_name').on(table.name)
+])
+
 // ─── Printer Events ──────────────────────────────────────────────────────────
 
 export const printerEvents = sqliteTable('printer_events', {

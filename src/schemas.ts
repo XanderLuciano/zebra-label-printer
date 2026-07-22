@@ -111,6 +111,101 @@ export const labelSchema = z.object({
   copies: z.number().int().min(1).max(10).optional()
 }).strict()
 
+/** POST /api/render/zpl — build ZPL from elements without printing (for previews) */
+export const renderZplSchema = z.object({
+  elements: z.array(labelElementSchema).min(1, 'At least one element required'),
+  copies: z.number().int().min(1).max(10).optional(),
+  widthDots: z.number().int().min(1).optional(),
+  heightDots: z.number().int().min(1).optional()
+}).strict()
+
+// ─── Label templates (designer) ─────────────────────────────────────────────
+//
+// Templates use *relative* positioning: positions and sizes are stored as a
+// percentage of the label's dimensions so a design auto-scales to any label
+// size. `content` fields may contain `{{variable}}` tokens. `overrides` lets a
+// design be tweaked per target size: sizeKey ("{widthDots}x{heightDots}") →
+// elementId → partial element fields.
+
+/** A named input variable with a mock/sample value for previews */
+const templateVariableSchema = z.object({
+  name: z.string().min(1).max(60).regex(/^[A-Za-z0-9_]+$/, 'Use letters, numbers, and underscores only'),
+  label: z.string().max(100).optional().default(''),
+  sample: z.string().max(500).optional().default('')
+}).strict()
+
+const templateBaseFields = {
+  id: z.string().min(1),
+  name: z.string().max(100).optional(),
+  /** Position as a percentage of label width/height (0–100) */
+  xPct: z.number().min(-50).max(150),
+  yPct: z.number().min(-50).max(150),
+  rotation: rotationEnum.optional(),
+  hidden: z.boolean().optional()
+}
+
+const templateTextElementSchema = z.object({
+  ...templateBaseFields,
+  type: z.literal('text'),
+  content: z.string(),
+  /** Font height as a percentage of label height */
+  fontHeightPct: z.number().min(0.5).max(100),
+  ratio: z.number().min(0.1).max(3.0).optional(),
+  font: z.string().optional(),
+  reverse: z.boolean().optional(),
+  align: z.enum(['left', 'center', 'right']).optional()
+}).strict()
+
+const templateBarcodeElementSchema = z.object({
+  ...templateBaseFields,
+  type: z.literal('barcode'),
+  content: z.string(),
+  barcodeType: barcodeTypeEnum,
+  /** Barcode height as a percentage of label height */
+  heightPct: z.number().min(1).max(100),
+  narrowBarWidth: z.number().int().min(1).max(10).optional(),
+  humanReadable: z.boolean().optional()
+}).strict()
+
+const templateQrElementSchema = z.object({
+  ...templateBaseFields,
+  type: z.literal('qrcode'),
+  content: z.string(),
+  magnification: z.number().int().min(1).max(10),
+  errorCorrection: errorCorrectionEnum.optional()
+}).strict()
+
+const templateBoxElementSchema = z.object({
+  ...templateBaseFields,
+  type: z.literal('box'),
+  /** Box width/height as a percentage of label width/height */
+  widthPct: z.number().min(0.1).max(150),
+  heightPct: z.number().min(0.1).max(150),
+  /** Border/line thickness in dots */
+  thickness: z.number().int().min(1).max(100),
+  rounding: z.number().int().min(0).max(8).optional(),
+  fill: z.boolean().optional()
+}).strict()
+
+const templateElementSchema = z.discriminatedUnion('type', [
+  templateTextElementSchema,
+  templateBarcodeElementSchema,
+  templateQrElementSchema,
+  templateBoxElementSchema
+])
+
+/** POST/PUT /api/templates — full template definition */
+export const templateSchema = z.object({
+  name: z.string().min(1, 'Template name is required').max(100),
+  description: z.string().max(500).optional(),
+  baseWidthDots: z.number().int().min(1),
+  baseHeightDots: z.number().int().min(1),
+  variables: z.array(templateVariableSchema).max(50).default([]),
+  elements: z.array(templateElementSchema).max(100).default([]),
+  // sizeKey -> elementId -> partial overrides (loosely validated)
+  overrides: z.record(z.string(), z.record(z.string(), z.record(z.string(), z.unknown()))).default({})
+}).strict()
+
 // ─── Serial / batch printing ────────────────────────────────────────────────
 
 /** POST /api/print/serial — multi-copy with auto-incrementing serial numbers */
@@ -135,5 +230,9 @@ export type TextLabelRequest = z.infer<typeof textLabelSchema>
 export type BarcodeLabelRequest = z.infer<typeof barcodeLabelSchema>
 export type QRLabelRequest = z.infer<typeof qrLabelSchema>
 export type LabelRequest = z.infer<typeof labelSchema>
+export type RenderZplRequest = z.infer<typeof renderZplSchema>
 export type SerialLabelRequest = z.infer<typeof serialLabelSchema>
 export type ClearJobsRequest = z.infer<typeof clearJobsSchema>
+export type TemplateDefinition = z.infer<typeof templateSchema>
+export type TemplateVariable = z.infer<typeof templateVariableSchema>
+export type TemplateElement = z.infer<typeof templateElementSchema>

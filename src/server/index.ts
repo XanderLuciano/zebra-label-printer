@@ -44,6 +44,14 @@ import {
   printSerialHandler,
   clearJobsHandler
 } from './handlers/post-routes'
+import {
+  templatesListHandler,
+  templateGetHandler,
+  templateCreateHandler,
+  templateUpdateHandler,
+  templateDeleteHandler,
+  renderZplHandler
+} from './handlers/template-routes'
 import { closeDb, getDb } from '../db/database'
 import { printJobs } from '../db/schema'
 import { eq } from 'drizzle-orm'
@@ -107,6 +115,9 @@ export class WebhookServer {
     get.set('/api/label-size', labelSizeGetHandler(apiKey))
     get.set('/api/version', versionHandler(apiKey))
 
+    // Templates (/api/templates/:id handled by prefix below)
+    get.set('/api/templates', templatesListHandler(apiKey))
+
     table.set('GET', get)
 
     // ── POST routes ─────────────────────────────────────────────────────────
@@ -118,6 +129,10 @@ export class WebhookServer {
     post.set('/api/print/zpl', printZplHandler(apiKey, getQueue))
     post.set('/api/print/label', printLabelHandler(apiKey, getQueue))
     post.set('/api/print/serial', printSerialHandler(apiKey, getQueue))
+
+    // Templates + rendering
+    post.set('/api/templates', templateCreateHandler(apiKey))
+    post.set('/api/render/zpl', renderZplHandler(apiKey))
 
     // Job actions
     post.set('/api/jobs/cancel', jobCancelHandler(apiKey, getQueue))
@@ -175,6 +190,17 @@ export class WebhookServer {
         } catch {
           json(res, { error: 'Failed to delete job' }, 500)
         }
+      }
+    }
+
+    // Pattern: /api/templates/:id (GET, PUT, DELETE)
+    if (pathname.startsWith('/api/templates/')) {
+      const parts = pathname.split('/')
+      if (parts.length === 4 && parts[3]) {
+        const id = decodeURIComponent(parts[3])
+        if (method === 'GET') return templateGetHandler(this.config.apiKey, id)
+        if (method === 'PUT') return templateUpdateHandler(this.config.apiKey, id)
+        if (method === 'DELETE') return templateDeleteHandler(this.config.apiKey, id)
       }
     }
 

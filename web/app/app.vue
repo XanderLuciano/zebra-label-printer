@@ -38,6 +38,7 @@ useSeoMeta({
           :items="[
             { label: 'Dashboard', icon: 'i-lucide-layout-dashboard', to: '/' },
             { label: 'Part Label', icon: 'i-lucide-tag', to: '/part-label' },
+            { label: 'Template Designer', icon: 'i-lucide-pen-tool', to: '/designer' },
             { label: 'Print History', icon: 'i-lucide-history', to: '/history' },
             { label: 'Queue', icon: 'i-lucide-list-ordered', to: '/queue' },
             { label: 'Debug', icon: 'i-lucide-terminal', to: '/debug' },

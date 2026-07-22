@@ -50,6 +50,26 @@ export function useApi() {
     printLabel: (data: { elements: Array<Record<string, unknown>>; copies?: number }) =>
       post<{ success: boolean; jobId: string; queued: boolean }>('/api/print/label', data),
 
+    // Render (build ZPL without printing — for accurate previews)
+    renderZpl: (data: { elements: Array<Record<string, unknown>>; copies?: number; widthDots?: number; heightDots?: number }) =>
+      post<{ zpl: string; widthDots: number; heightDots: number }>('/api/render/zpl', data),
+
+    // Templates
+    listTemplates: () =>
+      get<{ templates: Array<{ id: string; name: string; [k: string]: unknown }> }>('/api/templates'),
+    getTemplate: (id: string) =>
+      get<{ template: { id: string; name: string; [k: string]: unknown } }>(`/api/templates/${id}`),
+    createTemplate: (data: Record<string, unknown>) =>
+      post<{ template: { id: string; name: string; [k: string]: unknown } }>('/api/templates', data),
+    updateTemplate: (id: string, data: Record<string, unknown>) =>
+      $fetch<{ template: { id: string; name: string; [k: string]: unknown } }>(`${base}/api/templates/${id}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      }),
+    deleteTemplate: (id: string) =>
+      $fetch<{ success: boolean }>(`${base}/api/templates/${id}`, { method: 'DELETE' }),
+
     // Jobs
     getJobs: (status?: string) =>
       get<{ jobs: any[]; stats: any }>(`/api/jobs${status ? `?status=${status}` : ''}`),
