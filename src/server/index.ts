@@ -9,6 +9,7 @@
 
 import type { IncomingMessage, ServerResponse } from 'http'
 import { createServer } from 'http'
+import type { Server as NetServer } from 'net'
 import { createReadStream, existsSync, statSync } from 'fs'
 import { join, extname } from 'path'
 import { Printer } from '../printer'
@@ -74,6 +75,7 @@ export class WebhookServer {
   private config: Required<WebhookConfig>
   private routes: RouteTable
   private updateTimer: ReturnType<typeof setInterval> | null = null
+  private tcpServer: NetServer | null = null
 
   constructor(config: WebhookConfig = {}) {
     this.config = {
@@ -298,8 +300,7 @@ export class WebhookServer {
         if (tcpPort > 0) {
           const tcpHost = this.config.host
           try {
-            const tcpServer = startRawTcpServer(tcpPort, tcpHost, () => this.queue, this.printer!)
-            ;(this as any).tcpServer = tcpServer
+            this.tcpServer = startRawTcpServer(tcpPort, tcpHost, () => this.queue, this.printer!)
           } catch (err) {
             console.error(`   \u26a0 Failed to start raw TCP on port ${tcpPort}: ${(err as Error).message}`)
           }
@@ -391,7 +392,7 @@ export class WebhookServer {
       this.updateTimer = null
     }
     // Stop raw TCP server
-    const tcpServer = (this as any).tcpServer as import('net').Server | undefined
+    const tcpServer = this.tcpServer
     if (tcpServer) {
       tcpServer.close(() => {
         console.log('  Raw TCP server stopped')

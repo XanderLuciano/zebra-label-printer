@@ -22,10 +22,11 @@ const { data: labelSize } = useAsyncData('label-size', () => api.getLabelSize())
 const filteredJobs = computed(() => {
   const jobs = data.value?.jobs ?? [];
   if (statusFilter.value.length === 0) return jobs;
-  return jobs.filter((j: any) => statusFilter.value.includes(j.status));
+  return jobs.filter(j => statusFilter.value.includes(j.status));
 });
 
-const statusColors: Record<string, string> = {
+type BadgeColor = 'warning' | 'info' | 'success' | 'error' | 'neutral';
+const statusColors: Record<string, BadgeColor> = {
   pending: 'warning',
   printing: 'info',
   completed: 'success',
@@ -103,7 +104,7 @@ const columns: TableColumn<PrintJob>[] = [
     cell: ({ row }) => {
       const status = row.getValue('status') as string;
       return h(UBadge, {
-        color: (statusColors[status] || 'neutral') as any,
+        color: statusColors[status] || 'neutral',
         variant: 'subtle',
         size: 'xs'
       }, () => status);
@@ -124,8 +125,10 @@ const columns: TableColumn<PrintJob>[] = [
   }
 ];
 
+type PreviewElement = Record<string, unknown>;
+
 // Parse elements from request_data for label preview
-function getPreviewElements(job: PrintJob): Array<any> | null {
+function getPreviewElements(job: PrintJob): PreviewElement[] | null {
   if (job.job_type !== 'label') return null;
   try {
     const data = JSON.parse(job.request_data);
@@ -136,7 +139,7 @@ function getPreviewElements(job: PrintJob): Array<any> | null {
 }
 
 // For text/barcode/qr jobs, synthesize preview elements from request data
-function synthesizeElements(job: PrintJob): Array<any> | null {
+function synthesizeElements(job: PrintJob): PreviewElement[] | null {
   try {
     const data = JSON.parse(job.request_data);
     switch (job.job_type) {
@@ -166,7 +169,7 @@ function synthesizeElements(job: PrintJob): Array<any> | null {
   }
 }
 
-function getElements(job: PrintJob): Array<any> | null {
+function getElements(job: PrintJob): PreviewElement[] | null {
   return getPreviewElements(job) ?? synthesizeElements(job);
 }
 
@@ -181,22 +184,21 @@ async function reprint(job: PrintJob) {
   try {
     const requestData = JSON.parse(job.request_data);
 
-    let result: any;
     switch (job.job_type) {
       case 'text':
-        result = await api.printText(requestData);
+        await api.printText(requestData);
         break;
       case 'barcode':
-        result = await api.printBarcode(requestData);
+        await api.printBarcode(requestData);
         break;
       case 'qr':
-        result = await api.printQR(requestData);
+        await api.printQR(requestData);
         break;
       case 'zpl':
-        result = await api.printZpl(requestData.zpl);
+        await api.printZpl(requestData.zpl);
         break;
       case 'label':
-        result = await api.printLabel(requestData);
+        await api.printLabel(requestData);
         break;
       default:
         throw new Error(`Unknown job type: ${job.job_type}`);
@@ -204,8 +206,8 @@ async function reprint(job: PrintJob) {
 
     reprintResult.value = { id: job.id, success: true, message: 'Reprinted successfully!' };
     refresh();
-  } catch (err: any) {
-    reprintResult.value = { id: job.id, success: false, message: err.message || 'Reprint failed' };
+  } catch (err) {
+    reprintResult.value = { id: job.id, success: false, message: (err as Error).message || 'Reprint failed' };
   } finally {
     reprinting.value = null;
   }

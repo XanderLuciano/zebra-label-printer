@@ -259,8 +259,8 @@ async function printPartLabel() {
       await api.printLabel({ elements });
       partResult.value = `✅ Printed "${partForm.partName}"`;
     }
-  } catch (err: any) {
-    partResult.value = `❌ Error: ${err.message}`;
+  } catch (err) {
+    partResult.value = `❌ Error: ${(err as Error).message}`;
   } finally {
     partPrinting.value = false;
   }

@@ -7,7 +7,56 @@
  *   await api.printText({ lines: ['Hello'] })
  */
 
-const API_BASE = 'http://localhost:3420';
+export type JobStatus = 'pending' | 'printing' | 'completed' | 'failed' | 'cancelled';
+export type JobType = 'text' | 'barcode' | 'qr' | 'zpl' | 'label';
+
+export interface Job {
+  id: string;
+  status: JobStatus;
+  job_type: JobType;
+  request_data: string;
+  zpl_commands: string | null;
+  printer_name: string | null;
+  cups_job_id: string | null;
+  error_message: string | null;
+  created_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  priority: number;
+}
+
+export interface JobLog {
+  id: number;
+  job_id: string;
+  level: 'debug' | 'info' | 'warn' | 'error';
+  message: string;
+  created_at: string;
+}
+
+export interface JobStats {
+  total: number;
+  pending: number;
+  printing: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+}
+
+export interface PrinterEvent {
+  id: number;
+  printer_name: string;
+  event_type: string;
+  message: string | null;
+  created_at: string;
+}
+
+export interface DebugInfo {
+  printer: { name: string; isReady: boolean };
+  queue: { pending: number; processorRunning: boolean };
+  database: { path: string; sizeBytes: number; sizeFormatted: string; stats: JobStats };
+  server: { uptime: number; memory: Record<string, number>; nodeVersion: string };
+  printerEvents: PrinterEvent[];
+}
 
 export function useApi() {
   const config = useRuntimeConfig();
@@ -72,20 +121,20 @@ export function useApi() {
 
     // Jobs
     getJobs: (status?: string) =>
-      get<{ jobs: any[]; stats: any }>(`/api/jobs${status ? `?status=${status}` : ''}`),
+      get<{ jobs: Job[]; stats: JobStats }>(`/api/jobs${status ? `?status=${status}` : ''}`),
 
     getJobDetail: (id: string) =>
-      get<{ job: any; logs: any[] }>(`/api/jobs/${id}`),
+      get<{ job: Job; logs: JobLog[] }>(`/api/jobs/${id}`),
 
     getJobStats: () =>
-      get<{ total: number; pending: number; completed: number; failed: number; cancelled: number }>('/api/jobs/stats'),
+      get<JobStats>('/api/jobs/stats'),
 
     cancelJob: (id: string) =>
       post<{ success: boolean }>(`/api/jobs/${id}/cancel`),
 
     // Debug
     getDebug: () =>
-      get<{ printer: any; queue: any; database: any; server: any; printerEvents: any[] }>('/api/debug'),
+      get<DebugInfo>('/api/debug'),
 
     // Settings
     getSettings: () => get<Record<string, string>>('/api/settings'),

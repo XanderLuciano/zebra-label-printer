@@ -34,8 +34,8 @@ async function quickPrint() {
       : `❌ Failed: ${result.error || 'Unknown error'}`;
     printLines.value = '';
     refreshStats();
-  } catch (err: any) {
-    printResult.value = `❌ Error: ${err.message}`;
+  } catch (err) {
+    printResult.value = `❌ Error: ${(err as Error).message}`;
   } finally {
     printing.value = false;
   }
@@ -311,8 +311,8 @@ async function printPartLabel() {
       partResult.value = `✅ Printed "${partForm.partName}"`;
     }
     refreshStats();
-  } catch (err: any) {
-    partResult.value = `❌ Error: ${err.message}`;
+  } catch (err) {
+    partResult.value = `❌ Error: ${(err as Error).message}`;
   } finally {
     partPrinting.value = false;
   }

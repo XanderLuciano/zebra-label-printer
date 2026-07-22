@@ -27,8 +27,8 @@ async function manualCheck() {
   try {
     await api.checkForUpdates();
     await refreshVersion();
-  } catch (err: any) {
-    updateError.value = err.message || "Check failed";
+  } catch (err) {
+    updateError.value = (err as Error).message || "Check failed";
   } finally {
     checking.value = false;
   }
