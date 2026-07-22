@@ -52,6 +52,7 @@ const partForm = reactive({
   printPerPart: true,
   serialize: true,
   serialStart: 1,
+  serialNumber: '',
   bagLabelCount: 0,
 });
 const partPrinting = ref(false);
@@ -73,11 +74,18 @@ watch(() => partForm.serialize, (val) => {
   api.updateSettings({ serialize_labels: String(val) });
 });
 
+// Strip an accidental leading "rev" the user may type into the Revision field,
+// so we never render "Rev REV2". e.g. "REV2" -> "2", "Rev A" -> "A", "rev-B" -> "B".
+function stripRevPrefix(s: string): string {
+  return s.replace(/^\s*rev\.?\s*[:#-]?\s*/i, '').trim();
+}
+const cleanRev = computed(() => stripRevPrefix(partForm.rev));
+
 // Auto-generate barcode from partNumber-rev-vendor
 const partBarcode = computed(() => {
   const parts: string[] = [];
   if (partForm.partNumber.trim()) parts.push(partForm.partNumber.trim());
-  if (partForm.rev.trim()) parts.push(partForm.rev.trim());
+  if (cleanRev.value) parts.push(cleanRev.value);
   if (partForm.vendor.trim()) parts.push(partForm.vendor.trim());
   return parts.join('-');
 });
@@ -106,6 +114,16 @@ watch(() => partForm.quantity, (qty, prevQty) => {
 function formatSerial(index: number): string {
   const sn = String(partForm.serialStart + index).padStart(3, '0');
   return `${partForm.vendor.trim() || 'NRG'}-${sn}`;
+}
+
+// Resolve the serial for a given label index. For a single part you can type an
+// explicit serial (e.g. one you already have); leaving it blank auto-numbers.
+// Batches (quantity > 1) always auto-increment.
+function serialFor(index: number): string {
+  if (partForm.quantity === 1 && partForm.serialNumber.trim()) {
+    return partForm.serialNumber.trim();
+  }
+  return formatSerial(index);
 }
 
 // Layout constants for 2x1" label (406 x 203 dots at 203 DPI)
@@ -142,7 +160,7 @@ function composeSingleLabel(serial?: string): Array<Record<string, unknown>> {
 
   // Line 3: Rev | Serial or Vendor
   const line3Parts: string[] = [];
-  if (partForm.rev.trim()) line3Parts.push(`Rev ${partForm.rev.trim()}`);
+  if (cleanRev.value) line3Parts.push(`Rev ${cleanRev.value}`);
   if (serial) {
     line3Parts.push(serial);
   } else if (partForm.vendor.trim()) {
@@ -220,7 +238,7 @@ function composeBagLabel(): Array<Record<string, unknown>> {
 
   // Line 2: Rev | Vendor
   const line2Parts: string[] = [];
-  if (partForm.rev.trim()) line2Parts.push(`Rev ${partForm.rev.trim()}`);
+  if (cleanRev.value) line2Parts.push(`Rev ${cleanRev.value}`);
   if (partForm.vendor.trim()) line2Parts.push(partForm.vendor.trim());
   if (line2Parts.length > 0) {
     elements.push({
@@ -260,7 +278,7 @@ async function printPartLabel() {
     if (partForm.serialize) {
       // Print individual serialized labels (works for any quantity, including 1)
       for (let i = 0; i < partForm.quantity; i++) {
-        const serial = formatSerial(i);
+        const serial = serialFor(i);
         const elements = composeSingleLabel(serial);
         await api.printLabel({ elements });
       }
@@ -428,6 +446,7 @@ const formatUptime = (s: number) => {
                 placeholder="A"
                 size="sm"
                 :disabled="partPrinting"
+                @blur="partForm.rev = stripRevPrefix(partForm.rev)"
               />
             </UFormField>
             <UFormField label="Vendor">
@@ -474,12 +493,25 @@ const formatUptime = (s: number) => {
               />
               <span class="text-xs text-gray-500">({{ partForm.quantity }} labels)</span>
             </div>
-            <div class="flex items-center gap-4">
+            <div class="flex items-center gap-4 flex-wrap">
               <UCheckbox
                 v-model="partForm.serialize"
                 label="Serialize labels"
               />
-              <div v-if="partForm.serialize" class="flex items-center gap-2">
+              <!-- Single part: type the exact serial you have (blank auto-numbers) -->
+              <div v-if="partForm.serialize && partForm.quantity === 1" class="flex items-center gap-2">
+                <span class="text-xs text-gray-500">Serial #:</span>
+                <UInput
+                  v-model="partForm.serialNumber"
+                  size="xs"
+                  class="w-28"
+                  :placeholder="formatSerial(0)"
+                  :disabled="partPrinting"
+                />
+                <span class="text-xs text-gray-500">(blank → {{ formatSerial(0) }})</span>
+              </div>
+              <!-- Batch: auto-incrementing serials -->
+              <div v-else-if="partForm.serialize" class="flex items-center gap-2">
                 <span class="text-xs text-gray-500">Start at:</span>
                 <UInput
                   v-model.number="partForm.serialStart"
@@ -489,12 +521,7 @@ const formatUptime = (s: number) => {
                   class="w-16"
                 />
                 <span class="text-xs text-gray-500">
-                  <template v-if="partForm.quantity > 1">
-                    ({{ formatSerial(0) }} ... {{ formatSerial(partForm.quantity - 1) }})
-                  </template>
-                  <template v-else>
-                    ({{ formatSerial(0) }})
-                  </template>
+                  ({{ formatSerial(0) }} ... {{ formatSerial(partForm.quantity - 1) }})
                 </span>
               </div>
             </div>
