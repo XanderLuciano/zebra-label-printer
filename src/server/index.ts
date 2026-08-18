@@ -43,8 +43,13 @@ import {
   printZplHandler,
   printLabelHandler,
   printSerialHandler,
-  clearJobsHandler
+  clearJobsHandler,
+  jobResultHandler
 } from './handlers/post-routes'
+import {
+  printerConfigureHandler,
+  printerCalibrateHandler
+} from './handlers/printer-routes'
 import {
   templatesListHandler,
   templateGetHandler,
@@ -136,6 +141,10 @@ export class WebhookServer {
     post.set('/api/templates', templateCreateHandler(apiKey))
     post.set('/api/render/zpl', renderZplHandler(apiKey))
 
+    // Printer media configuration
+    post.set('/api/printer/configure', printerConfigureHandler(apiKey))
+    post.set('/api/printer/calibrate', printerCalibrateHandler(apiKey))
+
     // Job actions
     post.set('/api/jobs/cancel', jobCancelHandler(apiKey, getQueue))
     post.set('/api/jobs/clear', clearJobsHandler(apiKey))
@@ -179,6 +188,11 @@ export class WebhookServer {
     // Pattern: POST /api/jobs/:id/cancel
     if (method === 'POST' && pathname.startsWith('/api/jobs/') && pathname.endsWith('/cancel')) {
       return jobCancelHandler(this.config.apiKey, () => this.queue)
+    }
+
+    // Pattern: POST /api/jobs/:id/result — outcome of a locally printed job
+    if (method === 'POST' && pathname.startsWith('/api/jobs/') && pathname.endsWith('/result')) {
+      return jobResultHandler(this.config.apiKey, () => this.queue)
     }
 
     // Pattern: DELETE /api/jobs/:id

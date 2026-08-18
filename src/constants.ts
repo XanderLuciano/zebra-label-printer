@@ -66,6 +66,22 @@ export type Rotation = typeof ROTATIONS[number]
 export const ERROR_CORRECTIONS = ['L', 'M', 'Q', 'H'] as const
 export type ErrorCorrection = typeof ERROR_CORRECTIONS[number]
 
+// ─── Media Tracking ──────────────────────────────────────────────────────────
+//
+// How the printer finds the top of each label. Maps to the ZPL ^MN command;
+// see MEDIA_TRACKING_CODES in src/zpl.ts for the parameter letters.
+
+export const MEDIA_TRACKINGS = ['gap', 'mark', 'continuous', 'auto'] as const
+export type MediaTracking = typeof MEDIA_TRACKINGS[number]
+
+// ─── Print Target ────────────────────────────────────────────────────────────
+//
+// 'server' prints via CUPS on this machine. 'local' hands the ZPL back to the
+// browser, which sends it straight to a USB printer over WebUSB.
+
+export const PRINT_TARGETS = ['server', 'local'] as const
+export type PrintTarget = typeof PRINT_TARGETS[number]
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // PRINTER & LABEL DEFAULTS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -80,6 +96,23 @@ export const DEFAULT_LABEL_HEIGHT_DOTS = 1015
 /** Minimum label dimensions accepted by the API */
 export const MIN_LABEL_WIDTH_DOTS = 100
 export const MIN_LABEL_HEIGHT_DOTS = 50
+
+/** Print head resolutions the media config UI offers */
+export const SUPPORTED_DPIS = [203, 300, 600] as const
+export type SupportedDpi = typeof SUPPORTED_DPIS[number]
+
+/** Default media tracking: die-cut labels with gaps, the common case */
+export const DEFAULT_MEDIA_TRACKING = 'gap' as const
+
+/**
+ * Extra length past the label that ^ML allows the printer to feed while
+ * searching for the next gap. Zebra recommends comfortably more than the label
+ * itself, otherwise calibration never finds the gap.
+ */
+export const LABEL_LENGTH_SEARCH_MARGIN_INCHES = 1
+
+/** Upper bound for ^ML (39" at 203 DPI — the documented maximum) */
+export const MAX_LABEL_LENGTH_DOTS = 7967
 
 /** Default ZPL font (Zebra font '0' = scalable bitmap) */
 export const DEFAULT_FONT = '0'
@@ -143,3 +176,20 @@ export const DEFAULT_EVENT_LIMIT = 50
 
 /** Number of recent label sizes to remember */
 export const MAX_RECENT_SIZES = 10
+
+// ═══════════════════════════════════════════════════════════════════════════════
+// LOCAL (WebUSB) PRINTING
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/** Printer name recorded on jobs handed to a browser for direct USB transfer */
+export const LOCAL_PRINTER_NAME = 'local-usb'
+
+/**
+ * How long a local print may stay in 'printing' before it's marked failed.
+ *
+ * Local jobs are finalized by the browser via POST /api/jobs/:id/result. If the
+ * tab closes mid-transfer that call never arrives, so the job would otherwise
+ * sit in 'printing' forever. A USB transfer takes milliseconds, so a minute is
+ * generous.
+ */
+export const LOCAL_PRINT_TIMEOUT_SECONDS = 60

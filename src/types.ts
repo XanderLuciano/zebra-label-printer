@@ -1,5 +1,7 @@
 /** Type definitions for the Zebra Label Printer library */
 
+import type { MediaTracking } from './constants'
+
 /** A discovered printer */
 export interface PrinterInfo {
   /** CUPS printer name (e.g. 'ZTC-GK420d') */
@@ -84,6 +86,8 @@ export interface QROptions {
   magnification?: number;
   /** Error correction: L (7%), M (15%), Q (25%), H (30%) — default M */
   errorCorrection?: 'L' | 'M' | 'Q' | 'H';
+  /** Rotation: N (normal), R (90°), I (180°), B (270°) */
+  rotation?: 'N' | 'R' | 'I' | 'B';
 }
 
 /** A single element on a label */
@@ -92,6 +96,22 @@ export type LabelElement =
   | { type: 'barcode'; content: string; options: BarcodeOptions }
   | { type: 'qrcode'; content: string; options: QROptions }
   | { type: 'raw'; zpl: string }
+
+/** Options for generating the printer's media configuration ZPL */
+export interface MediaConfigOptions {
+  /** Label width in dots */
+  widthDots: number;
+  /** Label height in dots */
+  heightDots: number;
+  /** Print head resolution (default: 203) */
+  dpi?: number;
+  /** How the printer detects the top of each label (default: 'gap') */
+  tracking?: MediaTracking;
+  /** Black-mark offset in dots — only used when tracking is 'mark' */
+  markOffset?: number;
+  /** Save the configuration to non-volatile memory via ^JUS (default: true) */
+  persist?: boolean;
+}
 
 /** Options for a complete label */
 export interface LabelOptions {

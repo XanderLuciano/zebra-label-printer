@@ -185,6 +185,40 @@ describe('labelSchema', () => {
     expect(result.success).toBe(false)
   })
 
+  it('accepts rotation on qrcode elements', () => {
+    // The element schemas are .strict(), so an unlisted field is a hard reject.
+    // The designer emits rotation for QR codes, so it has to be allowed here.
+    const result = labelSchema.safeParse({
+      elements: [{ type: 'qrcode' as const, content: 'C', options: { x: 0, y: 0, rotation: 'R' as const } }]
+    })
+    expect(result.success).toBe(true)
+  })
+
+  it('rejects an invalid qrcode rotation', () => {
+    const result = labelSchema.safeParse({
+      elements: [{ type: 'qrcode' as const, content: 'C', options: { x: 0, y: 0, rotation: 'X' } }]
+    })
+    expect(result.success).toBe(false)
+  })
+
+  it('accepts a print target on every print schema', () => {
+    expect(textLabelSchema.safeParse({ lines: ['A'], target: 'local' }).success).toBe(true)
+    expect(labelSchema.safeParse({
+      elements: [{ type: 'raw' as const, zpl: '^FO0,0^FS' }],
+      target: 'local'
+    }).success).toBe(true)
+  })
+
+  it('defaults the print target to server', () => {
+    const result = textLabelSchema.safeParse({ lines: ['A'] })
+    expect(result.success).toBe(true)
+    expect(result.success && result.data.target).toBe('server')
+  })
+
+  it('rejects an unknown print target', () => {
+    expect(textLabelSchema.safeParse({ lines: ['A'], target: 'cloud' }).success).toBe(false)
+  })
+
   it('accepts optional copies', () => {
     const result = labelSchema.safeParse({
       elements: [{ type: 'text', content: 'A', options: { x: 0, y: 0 } }],

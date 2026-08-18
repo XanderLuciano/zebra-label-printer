@@ -1,8 +1,12 @@
 <script setup lang="ts">
 import { h, resolveComponent } from 'vue'
 import type { TableColumn } from '@nuxt/ui'
+import type { PrintLabelElement } from '../composables/useTemplateEngine'
 
 const api = useApi();
+const { printText, printBarcode, printQR, printZpl, printLabel, load: loadPrintTarget } = usePrintTarget();
+
+onMounted(loadPrintTarget);
 
 const UBadge = resolveComponent('UBadge')
 const UButton = resolveComponent('UButton')
@@ -59,6 +63,11 @@ type PrintJob = {
   request_data: string;
   zpl_commands: string | null;
   created_at: string;
+  // Label geometry frozen when the job was created. Null on jobs that predate
+  // the snapshot columns.
+  label_width_dots: number | null;
+  label_height_dots: number | null;
+  label_dpi: number | null;
 };
 
 const columns: TableColumn<PrintJob>[] = [
@@ -111,6 +120,18 @@ const columns: TableColumn<PrintJob>[] = [
     }
   },
   {
+    id: 'label_size',
+    header: 'Label',
+    cell: ({ row }) => {
+      const job = row.original;
+      if (!job.label_width_dots || !job.label_height_dots) {
+        return h('span', { class: 'text-gray-400' }, '—');
+      }
+      return formatLabelSize(job);
+    },
+    meta: { class: { td: 'text-sm text-gray-500 font-mono whitespace-nowrap' } }
+  },
+  {
     accessorKey: 'created_at',
     header: 'Created',
     cell: ({ row }) => {
@@ -125,41 +146,41 @@ const columns: TableColumn<PrintJob>[] = [
   }
 ];
 
-type PreviewElement = Record<string, unknown>;
-
 // Parse elements from request_data for label preview
-function getPreviewElements(job: PrintJob): PreviewElement[] | null {
+function getPreviewElements(job: PrintJob): PrintLabelElement[] | null {
   if (job.job_type !== 'label') return null;
   try {
     const data = JSON.parse(job.request_data);
-    return data.elements ?? null;
+    return (data.elements as PrintLabelElement[] | undefined) ?? null;
   } catch {
     return null;
   }
 }
 
-// For text/barcode/qr jobs, synthesize preview elements from request data
-function synthesizeElements(job: PrintJob): PreviewElement[] | null {
+// For text/barcode/qr jobs, synthesize preview elements from request data.
+// These layouts mirror the convenience builders in src/zpl.ts, so they're an
+// approximation of the print, not a faithful reproduction.
+function synthesizeElements(job: PrintJob): PrintLabelElement[] | null {
   try {
     const data = JSON.parse(job.request_data);
     switch (job.job_type) {
       case 'text': {
-        const lines = data.lines as string[] ?? [];
+        const lines = (data.lines as string[] | undefined) ?? [];
         return lines.map((line: string, i: number) => ({
           type: 'text',
           content: line,
-          options: { x: 20, y: 20 + i * 40, height: 30, width: 24 }
+          options: { x: 20, y: 20 + i * 40, height: 30, width: 24 },
         }));
       }
       case 'qr':
         return [
           { type: 'qrcode', content: data.data, options: { x: 20, y: 20, magnification: data.magnification ?? 5 } },
-          ...(data.text ? [{ type: 'text', content: data.text, options: { x: 20, y: 140, height: 20, width: 16 } }] : [])
+          ...(data.text ? [{ type: 'text' as const, content: data.text, options: { x: 20, y: 140, height: 20, width: 16 } }] : []),
         ];
       case 'barcode':
         return [
           { type: 'barcode', content: data.data, options: { x: 20, y: 20, type: data.type ?? 'CODE128', height: data.height ?? 80 } },
-          ...(data.text ? [{ type: 'text', content: data.text, options: { x: 20, y: 120, height: 20, width: 16 } }] : [])
+          ...(data.text ? [{ type: 'text' as const, content: data.text, options: { x: 20, y: 120, height: 20, width: 16 } }] : []),
         ];
       default:
         return null;
@@ -169,8 +190,45 @@ function synthesizeElements(job: PrintJob): PreviewElement[] | null {
   }
 }
 
-function getElements(job: PrintJob): PreviewElement[] | null {
+function getElements(job: PrintJob): PrintLabelElement[] | null {
   return getPreviewElements(job) ?? synthesizeElements(job);
+}
+
+/**
+ * Label geometry to preview a job at.
+ *
+ * Uses the size recorded on the job, not the current setting. Print history is
+ * a record of what came out of the printer — if you switch to 4×6" stock, a job
+ * printed last week on 2×1" labels was still printed on 2×1" labels, and
+ * redrawing it at the new size misrepresents it.
+ *
+ * Jobs created before the snapshot columns existed have no recorded size; those
+ * fall back to the current setting, flagged in the UI so it's clear the
+ * dimensions are a guess.
+ */
+function jobLabelSize(job: PrintJob) {
+  if (job.label_width_dots && job.label_height_dots) {
+    return {
+      widthDots: job.label_width_dots,
+      heightDots: job.label_height_dots,
+      dpi: job.label_dpi ?? labelSize.value?.dpi ?? 203,
+      recorded: true,
+    };
+  }
+  return {
+    widthDots: labelSize.value?.current?.widthDots ?? 609,
+    heightDots: labelSize.value?.current?.heightDots ?? 1015,
+    dpi: labelSize.value?.dpi ?? 203,
+    recorded: false,
+  };
+}
+
+/** Human-readable label size for the history row, e.g. `2 × 1" (406×203)` */
+function formatLabelSize(job: PrintJob): string {
+  const { widthDots, heightDots, dpi, recorded } = jobLabelSize(job);
+  const w = (widthDots / dpi).toFixed(2).replace(/\.?0+$/, '');
+  const h = (heightDots / dpi).toFixed(2).replace(/\.?0+$/, '');
+  return `${w} × ${h}"${recorded ? '' : ' (not recorded)'}`;
 }
 
 // Reprint logic
@@ -183,28 +241,34 @@ async function reprint(job: PrintJob) {
 
   try {
     const requestData = JSON.parse(job.request_data);
+    // Strip the original target: a reprint goes wherever this browser is
+    // currently pointed, not wherever the original job went.
+    delete requestData.target;
 
+    let result;
     switch (job.job_type) {
       case 'text':
-        await api.printText(requestData);
+        result = await printText(requestData);
         break;
       case 'barcode':
-        await api.printBarcode(requestData);
+        result = await printBarcode(requestData);
         break;
       case 'qr':
-        await api.printQR(requestData);
+        result = await printQR(requestData);
         break;
       case 'zpl':
-        await api.printZpl(requestData.zpl);
+        result = await printZpl(requestData.zpl);
         break;
       case 'label':
-        await api.printLabel(requestData);
+        result = await printLabel(requestData);
         break;
       default:
         throw new Error(`Unknown job type: ${job.job_type}`);
     }
 
-    reprintResult.value = { id: job.id, success: true, message: 'Reprinted successfully!' };
+    reprintResult.value = result.success
+      ? { id: job.id, success: true, message: result.target === 'local' ? 'Sent to local USB printer' : 'Reprint queued' }
+      : { id: job.id, success: false, message: result.error || 'Reprint failed' };
     refresh();
   } catch (err) {
     reprintResult.value = { id: job.id, success: false, message: (err as Error).message || 'Reprint failed' };
@@ -257,16 +321,22 @@ const expanded = ref<Record<string, boolean>>({});
 
       <template #expanded="{ row }">
         <div class="p-4 flex gap-6 items-start">
-          <!-- Label Preview -->
+          <!-- Label Preview — rendered at the size recorded on the job -->
           <div v-if="getElements(row.original)" class="shrink-0">
-            <p class="text-xs text-gray-500 mb-1">Label Preview</p>
+            <p class="text-xs text-gray-500 mb-1">
+              Label Preview
+              <span class="ml-1 font-mono">{{ formatLabelSize(row.original) }}</span>
+            </p>
             <LabelPreview
               :elements="getElements(row.original)!"
-              :width-dots="labelSize?.current?.widthDots ?? 406"
-              :height-dots="labelSize?.current?.heightDots ?? 203"
-              :dpi="labelSize?.dpi ?? 203"
+              :width-dots="jobLabelSize(row.original).widthDots"
+              :height-dots="jobLabelSize(row.original).heightDots"
+              :dpi="jobLabelSize(row.original).dpi"
               :max-width-px="300"
             />
+            <p v-if="!jobLabelSize(row.original).recorded" class="text-xs text-amber-600 dark:text-amber-400 mt-1 max-w-[300px]">
+              This job has no recorded label size, so the preview uses the current setting.
+            </p>
           </div>
           <div v-else class="text-sm text-gray-500 italic">
             No preview available for raw ZPL jobs.

@@ -1,5 +1,8 @@
 <script setup lang="ts">
 const api = useApi();
+// Routes to the server queue or a local USB printer, per the Settings preference.
+const { target: printTarget, printText, printLabel, load: loadPrintTarget } = usePrintTarget();
+const { isConnected: usbConnected, listenForUsbEvents, reconnect: reconnectUsb } = useLocalPrinter();
 
 const { data: health, refresh: refreshHealth } = useAsyncData('health', () => api.getHealth());
 const { data: debug } = useAsyncData('debug', () => api.getDebug());
@@ -8,6 +11,9 @@ const { data: stats, refresh: refreshStats } = useAsyncData('stats', () => api.g
 // Poll health + stats every 5 seconds
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 onMounted(() => {
+  loadPrintTarget();
+  listenForUsbEvents();
+  reconnectUsb();
   pollInterval = setInterval(() => {
     refreshHealth();
     refreshStats();
@@ -28,11 +34,13 @@ async function quickPrint() {
   printResult.value = null;
 
   try {
-    const result = await api.printText({ lines: [printLines.value] });
-    printResult.value = result.success
-      ? `✅ Printed! ${result.queued ? '(Queued)' : ''}`
-      : `❌ Failed: ${result.error || 'Unknown error'}`;
-    printLines.value = '';
+    const result = await printText({ lines: [printLines.value] });
+    if (result.success) {
+      printResult.value = result.target === 'local' ? '✅ Printed over USB!' : '✅ Printed!';
+      printLines.value = '';
+    } else {
+      printResult.value = `❌ Failed: ${result.error || 'Unknown error'}`;
+    }
     refreshStats();
   } catch (err) {
     printResult.value = `❌ Error: ${(err as Error).message}`;
@@ -272,20 +280,24 @@ async function printPartLabel() {
   partPrinting.value = true;
   partResult.value = null;
 
+  /** Print one label through the selected target, throwing on failure. */
+  const send = async (elements: Array<Record<string, unknown>>) => {
+    const res = await printLabel({ elements });
+    if (!res.success) throw new Error(res.error || 'Print failed');
+  };
+
   try {
     const bagCount = Math.max(0, partForm.bagLabelCount);
 
     if (partForm.serialize) {
       // Print individual serialized labels (works for any quantity, including 1)
       for (let i = 0; i < partForm.quantity; i++) {
-        const serial = serialFor(i);
-        const elements = composeSingleLabel(serial);
-        await api.printLabel({ elements });
+        await send(composeSingleLabel(serialFor(i)));
       }
       // Print bag label(s)
       const bagElements = composeBagLabel();
       for (let i = 0; i < bagCount; i++) {
-        await api.printLabel({ elements: bagElements });
+        await send(bagElements);
       }
 
       const bagMsg = bagCount > 0 ? ` + ${bagCount} bag label${bagCount > 1 ? 's' : ''}` : '';
@@ -294,20 +306,19 @@ async function printPartLabel() {
       // Print identical individual labels via ^PQ
       const elements = composeSingleLabel();
       elements.push({ type: 'raw', zpl: `^PQ${partForm.quantity}` });
-      await api.printLabel({ elements });
+      await send(elements);
 
       // Print bag label(s)
       const bagElements = composeBagLabel();
       for (let i = 0; i < bagCount; i++) {
-        await api.printLabel({ elements: bagElements });
+        await send(bagElements);
       }
 
       const bagMsg = bagCount > 0 ? ` + ${bagCount} bag label${bagCount > 1 ? 's' : ''}` : '';
       partResult.value = `✅ Printed ${partForm.quantity} part labels${bagMsg}`;
     } else {
       // Single label (or qty shown on label)
-      const elements = composeSingleLabel();
-      await api.printLabel({ elements });
+      await send(composeSingleLabel());
       partResult.value = `✅ Printed "${partForm.partName}"`;
     }
     refreshStats();
@@ -328,7 +339,19 @@ const formatUptime = (s: number) => {
 
 <template>
   <div class="p-6 space-y-6">
-    <h1 class="text-2xl font-bold">Dashboard</h1>
+    <div class="flex items-center justify-between flex-wrap gap-3">
+      <h1 class="text-2xl font-bold">Dashboard</h1>
+      <!-- Where prints from this browser are going -->
+      <UBadge
+        :color="printTarget === 'local' ? (usbConnected ? 'info' : 'warning') : 'neutral'"
+        variant="subtle"
+        :icon="printTarget === 'local' ? 'i-lucide-usb' : 'i-lucide-server'"
+      >
+        {{ printTarget === 'local'
+          ? (usbConnected ? 'Printing to local USB' : 'Local USB — not connected')
+          : 'Printing to server' }}
+      </UBadge>
+    </div>
 
     <!-- Status cards -->
     <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">

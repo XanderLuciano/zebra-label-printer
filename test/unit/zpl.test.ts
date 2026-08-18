@@ -79,6 +79,24 @@ describe('ZPLBuilder', () => {
     expect(inverted).toContain('^A0I')
   })
 
+  it('supports QR code rotation', () => {
+    // ^BQ's first parameter is the field orientation. It was previously
+    // hardcoded to 'N', which silently discarded rotation on QR codes.
+    expect(new ZPLBuilder().qrcode('DATA', { x: 10, y: 10, rotation: 'R' }).build())
+      .toContain('^BQR,2,')
+    expect(new ZPLBuilder().qrcode('DATA', { x: 10, y: 10, rotation: 'B' }).build())
+      .toContain('^BQB,2,')
+  })
+
+  it('defaults QR code rotation to normal', () => {
+    expect(new ZPLBuilder().qrcode('DATA', { x: 10, y: 10 }).build()).toContain('^BQN,2,')
+  })
+
+  it('supports rotation on QR codes routed through barcode()', () => {
+    expect(new ZPLBuilder().barcode('DATA', { x: 10, y: 10, type: 'QRCODE', rotation: 'I' }).build())
+      .toContain('^BQI,2,')
+  })
+
   it('supports reverse text', () => {
     const zpl = new ZPLBuilder()
       .text('Reverse', { x: 50, y: 50, reverse: true })

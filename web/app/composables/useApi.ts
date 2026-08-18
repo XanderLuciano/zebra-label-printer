@@ -10,6 +10,12 @@
 export type JobStatus = 'pending' | 'printing' | 'completed' | 'failed' | 'cancelled';
 export type JobType = 'text' | 'barcode' | 'qr' | 'zpl' | 'label';
 
+/** Where a label is printed: via the server's CUPS queue, or the browser's USB printer */
+export type PrintTargetName = 'server' | 'local';
+
+/** How the printer detects the top of each label (ZPL ^MN) */
+export type MediaTracking = 'gap' | 'mark' | 'continuous' | 'auto';
+
 export interface Job {
   id: string;
   status: JobStatus;
@@ -19,10 +25,32 @@ export interface Job {
   printer_name: string | null;
   cups_job_id: string | null;
   error_message: string | null;
+  /** Label width the job was rendered for. Null on jobs predating the snapshot. */
+  label_width_dots: number | null;
+  /** Label height the job was rendered for. Null on jobs predating the snapshot. */
+  label_height_dots: number | null;
+  /** Printer resolution the job was rendered for. Null on jobs predating the snapshot. */
+  label_dpi: number | null;
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
   priority: number;
+}
+
+/**
+ * Response from a print endpoint.
+ *
+ * `zpl` is only populated when `target: 'local'` was requested — the server
+ * records the job but leaves transmission to the browser over WebUSB.
+ */
+export interface PrintResponse {
+  success: boolean;
+  jobId: string;
+  queued?: boolean;
+  target?: PrintTargetName;
+  zpl?: string;
+  error?: string;
+  labelSize?: { widthDots: number; heightDots: number; dpi: number };
 }
 
 export interface JobLog {
@@ -83,21 +111,21 @@ export function useApi() {
     // Printers
     getPrinters: () => get<{ printers: Array<{ name: string; isZebra: boolean; status: string }> }>('/api/printers'),
 
-    // Print
-    printText: (data: { lines: string[]; copies?: number }) =>
-      post<{ success: boolean; jobId: string; queued: boolean }>('/api/print/text', data),
+    // Print — pass `target: 'local'` to get ZPL back for WebUSB instead of printing
+    printText: (data: { lines: string[]; copies?: number; target?: PrintTargetName }) =>
+      post<PrintResponse>('/api/print/text', data),
 
-    printBarcode: (data: { data: string; type?: string; text?: string }) =>
-      post<{ success: boolean; jobId: string; queued: boolean }>('/api/print/barcode', data),
+    printBarcode: (data: { data: string; type?: string; text?: string; target?: PrintTargetName }) =>
+      post<PrintResponse>('/api/print/barcode', data),
 
-    printQR: (data: { data: string; text?: string; magnification?: number }) =>
-      post<{ success: boolean; jobId: string; queued: boolean }>('/api/print/qr', data),
+    printQR: (data: { data: string; text?: string; magnification?: number; target?: PrintTargetName }) =>
+      post<PrintResponse>('/api/print/qr', data),
 
-    printZpl: (zpl: string) =>
-      post<{ success: boolean; jobId: string; queued: boolean }>('/api/print/zpl', { zpl }),
+    printZpl: (zpl: string, target?: PrintTargetName) =>
+      post<PrintResponse>('/api/print/zpl', { zpl, ...(target ? { target } : {}) }),
 
-    printLabel: (data: { elements: Array<Record<string, unknown>>; copies?: number }) =>
-      post<{ success: boolean; jobId: string; queued: boolean }>('/api/print/label', data),
+    printLabel: (data: { elements: Array<Record<string, unknown>>; copies?: number; target?: PrintTargetName }) =>
+      post<PrintResponse>('/api/print/label', data),
 
     // Render (build ZPL without printing — for accurate previews)
     renderZpl: (data: { elements: Array<Record<string, unknown>>; copies?: number; widthDots?: number; heightDots?: number }) =>
@@ -132,6 +160,47 @@ export function useApi() {
     cancelJob: (id: string) =>
       post<{ success: boolean }>(`/api/jobs/${id}/cancel`),
 
+    /**
+     * Report the outcome of a job printed over local USB.
+     * Without this the job stays in 'printing' forever.
+     */
+    reportJobResult: (id: string, success: boolean, error?: string) =>
+      post<{ success: boolean; jobId: string; status: string }>(`/api/jobs/${id}/result`, {
+        success,
+        ...(error ? { error: error.slice(0, 500) } : {}),
+      }),
+
+    // Printer media configuration
+    /**
+     * Push media geometry to the printer (^PW / ^ML / ^MN, plus ^LL on
+     * continuous stock). Omitted dimensions default to the configured label
+     * size. With `target: 'local'` the ZPL is returned instead of printed.
+     */
+    configurePrinter: (data: {
+      widthDots?: number;
+      heightDots?: number;
+      dpi?: number;
+      tracking?: MediaTracking;
+      markOffset?: number;
+      persist?: boolean;
+      calibrate?: boolean;
+      target?: PrintTargetName;
+    }) =>
+      post<{
+        success: boolean;
+        target: PrintTargetName;
+        zpl?: string;
+        error?: string;
+        applied: { widthDots: number; heightDots: number; dpi: number; tracking: string; calibrated: boolean };
+      }>('/api/printer/configure', data),
+
+    /** Run a media sensor calibration (~JC). The printer feeds 2–4 labels. */
+    calibratePrinter: (target?: PrintTargetName) =>
+      post<{ success: boolean; target: PrintTargetName; zpl?: string; message?: string; error?: string }>(
+        '/api/printer/calibrate',
+        { ...(target ? { target } : {}) },
+      ),
+
     // Debug
     getDebug: () =>
       get<DebugInfo>('/api/debug'),
@@ -151,8 +220,23 @@ export function useApi() {
       standards: Array<{ widthInches: number; heightInches: number; widthDots: number; heightDots: number; name: string }>;
       dpi: number;
     }>('/api/label-size'),
-    setLabelSize: (size: { widthDots: number; heightDots: number; name: string }) =>
-      $fetch(`${base}/api/label-size`, {
+    /**
+     * Set the label size. The server also pushes the geometry to the connected
+     * printer unless `applyToPrinter: false` — pass that when printing locally,
+     * since the browser owns the USB connection in that case.
+     */
+    setLabelSize: (size: {
+      widthDots: number;
+      heightDots: number;
+      name: string;
+      applyToPrinter?: boolean;
+      tracking?: MediaTracking;
+    }) =>
+      $fetch<{
+        success: boolean;
+        size: { widthInches: number; heightInches: number; widthDots: number; heightDots: number; name: string };
+        printerConfig: { applied: boolean; error?: string };
+      }>(`${base}/api/label-size`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(size),

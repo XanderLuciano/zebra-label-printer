@@ -21,6 +21,13 @@ export const printJobs = sqliteTable('print_jobs', {
   printerName: text('printer_name'),                 // Target printer
   cupsJobId: text('cups_job_id'),                    // CUPS job ID after printing
   errorMessage: text('error_message'),               // Error details if failed
+  // Label geometry snapshot, captured when the job is created. Print history
+  // must show the label this job was actually printed on, so these are frozen
+  // here rather than read back from the (mutable) label_size setting.
+  // Nullable: rows created before this column existed have no snapshot.
+  labelWidthDots: integer('label_width_dots'),
+  labelHeightDots: integer('label_height_dots'),
+  labelDpi: integer('label_dpi'),
   createdAt: text('created_at').notNull().default("(datetime('now'))"),
   startedAt: text('started_at'),
   completedAt: text('completed_at'),

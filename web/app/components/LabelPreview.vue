@@ -1,33 +1,34 @@
 <script setup lang="ts">
 /**
  * LabelPreview — renders a visual preview of a printed label.
- * Takes the label elements array and label size (in dots) and renders
- * a scaled SVG representation of what the label looks like.
+ *
+ * Takes the label `elements` array in the /api/print/label payload shape plus
+ * the label size in dots, and draws a scaled SVG approximation.
+ *
+ * Element rotation is honoured: each shape is drawn in its unrotated
+ * coordinate space and placed with an SVG transform, matching how ZPL treats
+ * `^FO` as the top-left of the *rotated* bounding box. The geometry lives in
+ * useTemplateEngine so the designer canvas and this preview agree.
  */
+import type { Rotation, PrintLabelElement, BarcodeType } from '../composables/useTemplateEngine';
+import { rotationTransform, estimateBarcodeWidth, is2dSymbology } from '../composables/useTemplateEngine';
 
-interface LabelElement {
-  type: 'text' | 'qrcode' | 'barcode' | 'raw';
-  content?: string;
-  zpl?: string;
-  options?: {
-    x?: number;
-    y?: number;
-    height?: number;
-    width?: number;
-    magnification?: number;
-    type?: string;
-  };
-}
-
-interface ParsedLine {
+/** A drawable element: unrotated geometry plus the transform that places it. */
+interface DrawnElement {
+  key: number;
+  kind: 'text' | 'qrcode' | 'barcode' | 'matrix' | 'box';
   x: number;
   y: number;
-  width: number;
-  height: number;
+  w: number;
+  h: number;
+  transform?: string;
+  text: string;
+  reverse: boolean;
+  showText: boolean;
 }
 
 const props = withDefaults(defineProps<{
-  elements: LabelElement[];
+  elements: PrintLabelElement[];
   widthDots?: number;
   heightDots?: number;
   dpi?: number;
@@ -43,16 +44,98 @@ const scale = computed(() => props.maxWidthPx / props.widthDots);
 const svgWidth = computed(() => props.widthDots * scale.value);
 const svgHeight = computed(() => props.heightDots * scale.value);
 
-// Parse raw ZPL ^FO{x},{y}^GB{w},{h},{t}... into line/rect data
-function parseRawZpl(zpl: string): ParsedLine | null {
+// Parse raw ZPL `^FO{x},{y}^GB{w},{h},{t}` into a rectangle. Box elements bake
+// their rotation into the ^GB dimensions, so no transform is needed here.
+function parseGraphicBox(zpl: string) {
   const match = zpl.match(/\^FO(\d+),(\d+)\^GB(\d+),(\d+),(\d+)/);
   if (!match) return null;
   return {
-    x: parseInt(match[1]),
-    y: parseInt(match[2]),
-    width: parseInt(match[3]),
-    height: parseInt(match[4]),
+    x: parseInt(match[1]!, 10),
+    y: parseInt(match[2]!, 10),
+    w: parseInt(match[3]!, 10),
+    h: parseInt(match[4]!, 10),
   };
+}
+
+const drawn = computed<DrawnElement[]>(() => {
+  const out: DrawnElement[] = [];
+
+  props.elements.forEach((el, i) => {
+    const o = el.options ?? {};
+    const x = o.x ?? 0;
+    const y = o.y ?? 0;
+    const rotation: Rotation = o.rotation ?? 'N';
+    const content = el.content ?? '';
+
+    if (el.type === 'text' && content) {
+      const h = o.height ?? 20;
+      const charW = o.width ?? Math.round(h * (o.ratio ?? 0.8));
+      const w = Math.max(charW, content.length * charW);
+      out.push({
+        key: i,
+        kind: 'text',
+        x,
+        y,
+        w,
+        h,
+        transform: rotationTransform({ x, y, w, h }, rotation) || undefined,
+        text: content,
+        reverse: !!o.reverse,
+        showText: false,
+      });
+    } else if (el.type === 'qrcode' && content) {
+      const size = (o.magnification ?? 5) * 21;
+      out.push({
+        key: i,
+        kind: 'qrcode',
+        x,
+        y,
+        w: size,
+        h: size,
+        transform: rotationTransform({ x, y, w: size, h: size }, rotation) || undefined,
+        text: content,
+        reverse: false,
+        showText: false,
+      });
+    } else if (el.type === 'barcode' && content) {
+      const h = o.height ?? 50;
+      // 2D symbologies come through the barcode element too; those are square.
+      const symbology = (o.type ?? 'CODE128') as BarcodeType;
+      const is2d = is2dSymbology(symbology);
+      const w = is2d ? h : estimateBarcodeWidth(content, symbology, o.narrowBarWidth);
+      out.push({
+        key: i,
+        kind: is2d ? 'matrix' : 'barcode',
+        x,
+        y,
+        w,
+        h,
+        transform: rotationTransform({ x, y, w, h }, rotation) || undefined,
+        text: content,
+        reverse: false,
+        showText: o.humanReadable !== false && !is2d,
+      });
+    } else if (el.type === 'raw' && el.zpl) {
+      const box = parseGraphicBox(el.zpl);
+      if (box) {
+        out.push({
+          key: i,
+          kind: 'box',
+          ...box,
+          text: '',
+          reverse: false,
+          showText: false,
+        });
+      }
+    }
+  });
+
+  return out;
+});
+
+/** Evenly spaced fake bars across a barcode placeholder */
+function barX(el: DrawnElement, j: number): number {
+  return el.x + (j / 20) * el.w;
 }
 </script>
 
@@ -63,110 +146,79 @@ function parseRawZpl(zpl: string): ParsedLine | null {
     :viewBox="`0 0 ${widthDots} ${heightDots}`"
     class="border border-gray-300 rounded bg-white"
     xmlns="http://www.w3.org/2000/svg"
+    role="img"
+    :aria-label="`Label preview, ${widthDots} by ${heightDots} dots`"
   >
     <!-- Label background -->
     <rect x="0" y="0" :width="widthDots" :height="heightDots" fill="white" />
 
-    <template v-for="(el, i) in elements" :key="i">
-      <!-- Text element -->
+    <g v-for="el in drawn" :key="el.key" :transform="el.transform">
+      <!-- Text -->
       <text
-        v-if="el.type === 'text' && el.content"
-        :x="el.options?.x ?? 0"
-        :y="(el.options?.y ?? 0) + (el.options?.height ?? 20)"
-        :font-size="el.options?.height ?? 20"
+        v-if="el.kind === 'text'"
+        :x="el.x"
+        :y="el.y + el.h * 0.82"
+        :font-size="el.h"
         font-family="monospace"
-        fill="black"
-      >
-        {{ el.content }}
-      </text>
+        :fill="el.reverse ? 'white' : 'black'"
+      >{{ el.text }}</text>
 
       <!-- QR code placeholder -->
-      <g v-else-if="el.type === 'qrcode' && el.content">
+      <template v-else-if="el.kind === 'qrcode'">
+        <rect :x="el.x" :y="el.y" :width="el.w" :height="el.h" fill="white" stroke="black" stroke-width="1" />
+        <!-- Finder patterns: top-left, top-right, bottom-left -->
+        <rect :x="el.x + el.w * 0.06" :y="el.y + el.h * 0.06" :width="el.w * 0.24" :height="el.h * 0.24" fill="black" />
+        <rect :x="el.x + el.w * 0.70" :y="el.y + el.h * 0.06" :width="el.w * 0.24" :height="el.h * 0.24" fill="black" />
+        <rect :x="el.x + el.w * 0.06" :y="el.y + el.h * 0.70" :width="el.w * 0.24" :height="el.h * 0.24" fill="black" />
         <rect
-          :x="el.options?.x ?? 0"
-          :y="el.options?.y ?? 0"
-          :width="(el.options?.magnification ?? 5) * 21"
-          :height="(el.options?.magnification ?? 5) * 21"
-          fill="white"
-          stroke="black"
-          stroke-width="1"
-        />
-        <!-- QR finder patterns (top-left, top-right, bottom-left) -->
-        <rect
-          :x="(el.options?.x ?? 0) + 2"
-          :y="(el.options?.y ?? 0) + 2"
-          :width="(el.options?.magnification ?? 5) * 5"
-          :height="(el.options?.magnification ?? 5) * 5"
-          fill="black"
-        />
-        <rect
-          :x="(el.options?.x ?? 0) + (el.options?.magnification ?? 5) * 16 - 2"
-          :y="(el.options?.y ?? 0) + 2"
-          :width="(el.options?.magnification ?? 5) * 5"
-          :height="(el.options?.magnification ?? 5) * 5"
-          fill="black"
-        />
-        <rect
-          :x="(el.options?.x ?? 0) + 2"
-          :y="(el.options?.y ?? 0) + (el.options?.magnification ?? 5) * 16 - 2"
-          :width="(el.options?.magnification ?? 5) * 5"
-          :height="(el.options?.magnification ?? 5) * 5"
-          fill="black"
-        />
-        <!-- Center data area -->
-        <rect
-          :x="(el.options?.x ?? 0) + (el.options?.magnification ?? 5) * 7"
-          :y="(el.options?.y ?? 0) + (el.options?.magnification ?? 5) * 7"
-          :width="(el.options?.magnification ?? 5) * 7"
-          :height="(el.options?.magnification ?? 5) * 7"
+          :x="el.x + el.w * 0.38"
+          :y="el.y + el.h * 0.38"
+          :width="el.w * 0.24"
+          :height="el.h * 0.24"
           fill="black"
           opacity="0.3"
         />
-      </g>
+      </template>
 
-      <!-- Barcode placeholder -->
-      <g v-else-if="el.type === 'barcode' && el.content">
-        <rect
-          :x="el.options?.x ?? 0"
-          :y="el.options?.y ?? 0"
-          :width="150"
-          :height="el.options?.height ?? 50"
-          fill="white"
-          stroke="black"
-          stroke-width="0.5"
-        />
-        <!-- Barcode lines pattern -->
+      <!-- 2D matrix placeholder (QR/Data Matrix via the barcode element) -->
+      <template v-else-if="el.kind === 'matrix'">
+        <rect :x="el.x" :y="el.y" :width="el.w" :height="el.h" fill="white" stroke="black" stroke-width="2" />
+        <rect :x="el.x + el.w * 0.08" :y="el.y + el.h * 0.08" :width="el.w * 0.25" :height="el.h * 0.25" fill="black" />
+      </template>
+
+      <!-- 1D barcode placeholder -->
+      <template v-else-if="el.kind === 'barcode'">
+        <rect :x="el.x" :y="el.y" :width="el.w" :height="el.h" fill="white" />
         <line
           v-for="j in 20"
           :key="j"
-          :x1="(el.options?.x ?? 0) + j * 7"
-          :y1="el.options?.y ?? 0"
-          :x2="(el.options?.x ?? 0) + j * 7"
-          :y2="(el.options?.y ?? 0) + (el.options?.height ?? 50)"
+          :x1="barX(el, j)"
+          :y1="el.y"
+          :x2="barX(el, j)"
+          :y2="el.y + el.h"
           stroke="black"
-          :stroke-width="j % 3 === 0 ? 3 : 1"
+          :stroke-width="j % 3 === 0 ? el.w / 40 : el.w / 90"
         />
         <text
-          :x="(el.options?.x ?? 0) + 75"
-          :y="(el.options?.y ?? 0) + (el.options?.height ?? 50) + 12"
-          font-size="10"
+          v-if="el.showText"
+          :x="el.x + el.w / 2"
+          :y="el.y + el.h + el.h * 0.28"
+          :font-size="el.h * 0.24"
           font-family="monospace"
           fill="black"
           text-anchor="middle"
-        >
-          {{ el.content }}
-        </text>
-      </g>
+        >{{ el.text }}</text>
+      </template>
 
-      <!-- Raw ZPL: render ^FO...^GB... as rectangles/lines -->
+      <!-- Box / line from raw ^GB -->
       <rect
-        v-else-if="el.type === 'raw' && el.zpl && parseRawZpl(el.zpl)"
-        :x="parseRawZpl(el.zpl)!.x"
-        :y="parseRawZpl(el.zpl)!.y"
-        :width="parseRawZpl(el.zpl)!.width"
-        :height="parseRawZpl(el.zpl)!.height"
+        v-else-if="el.kind === 'box'"
+        :x="el.x"
+        :y="el.y"
+        :width="el.w"
+        :height="el.h"
         fill="black"
       />
-    </template>
+    </g>
   </svg>
 </template>

@@ -15,6 +15,9 @@ import {
 
 const api = useApi()
 const toast = useToast()
+// Routes prints to the server queue or a local USB printer, per the
+// per-browser preference in Settings.
+const { printLabel, load: loadPrintTarget } = usePrintTarget()
 
 // Literal token example for help text (kept out of the template to avoid
 // the Vue compiler tripping on nested `{{ }}` delimiters).
@@ -319,10 +322,10 @@ async function printTest() {
   }
   printing.value = true
   try {
-    await api.printLabel({ elements })
-    toast.add({ title: 'Sent to printer', color: 'success' })
-  } catch (e) {
-    toast.add({ title: 'Print failed', description: (e as Error).message, color: 'error' })
+    const res = await printLabel({ elements })
+    toast.add(res.success
+      ? { title: res.target === 'local' ? 'Sent to local USB printer' : 'Sent to printer', color: 'success' }
+      : { title: 'Print failed', description: res.error, color: 'error' })
   } finally {
     printing.value = false
   }
@@ -366,7 +369,10 @@ watch([resolved, targetW, targetH], () => {
 })
 watch(autoAccurate, (on) => { if (on) fetchAccurate() })
 
-onMounted(refreshTemplateList)
+onMounted(() => {
+  loadPrintTarget()
+  refreshTemplateList()
+})
 </script>
 
 <template>

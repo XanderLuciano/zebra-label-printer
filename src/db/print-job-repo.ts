@@ -7,7 +7,7 @@ import { eq, sql, desc, asc, count, and } from 'drizzle-orm'
 import { getDb } from './database'
 import { printJobs, jobLogs } from './schema'
 import type { JobStatus, JobType, LogLevel } from '../constants'
-import { DEFAULT_JOB_LIMIT, MAX_JOB_LIMIT } from '../constants'
+import { DEFAULT_JOB_LIMIT, MAX_JOB_LIMIT, DEFAULT_DPI } from '../constants'
 
 export type { JobStatus, JobType }
 
@@ -20,10 +20,30 @@ export interface PrintJob {
   printer_name: string | null;
   cups_job_id: string | null;
   error_message: string | null;
+  /** Label width this job was rendered for, in dots. Null for pre-snapshot rows. */
+  label_width_dots: number | null;
+  /** Label height this job was rendered for, in dots. Null for pre-snapshot rows. */
+  label_height_dots: number | null;
+  /** Printer resolution this job was rendered for. Null for pre-snapshot rows. */
+  label_dpi: number | null;
   created_at: string;
   started_at: string | null;
   completed_at: string | null;
   priority: number;
+}
+
+/**
+ * The label geometry a job was rendered for, frozen at creation time.
+ *
+ * Print history has to reflect the label that was actually loaded when the job
+ * printed. Reading the current `label_size` setting at display time gets this
+ * wrong the moment someone changes label stock, so every job carries its own
+ * copy.
+ */
+export interface JobLabelSize {
+  widthDots: number;
+  heightDots: number;
+  dpi: number;
 }
 
 export interface JobLogEntry {
@@ -58,6 +78,9 @@ function toPrintJob(row: typeof printJobs.$inferSelect): PrintJob {
     printer_name: row.printerName,
     cups_job_id: row.cupsJobId,
     error_message: row.errorMessage,
+    label_width_dots: row.labelWidthDots,
+    label_height_dots: row.labelHeightDots,
+    label_dpi: row.labelDpi,
     created_at: row.createdAt,
     started_at: row.startedAt,
     completed_at: row.completedAt,
@@ -76,12 +99,19 @@ function toJobLogEntry(row: typeof jobLogs.$inferSelect): JobLogEntry {
   }
 }
 
-/** Create a new print job (status: pending) */
+/**
+ * Create a new print job (status: pending).
+ *
+ * @param labelSize - Label geometry to freeze onto the job. Pass the size the
+ *   ZPL is being rendered for so history and reprints stay accurate even after
+ *   the global label size changes.
+ */
 export function createJob(
   jobType: JobType,
   requestData: unknown,
   zplCommands?: string,
-  printerName?: string
+  printerName?: string,
+  labelSize?: JobLabelSize
 ): PrintJob {
   const db = getDb()
   const id = generateId()
@@ -94,11 +124,24 @@ export function createJob(
     requestData: data,
     zplCommands: zplCommands ?? null,
     printerName: printerName ?? null,
+    labelWidthDots: labelSize?.widthDots ?? null,
+    labelHeightDots: labelSize?.heightDots ?? null,
+    labelDpi: labelSize?.dpi ?? null,
     priority: 0
   }).run()
 
   addJobLog(id, 'info', `Job created (${jobType})`)
   return getJob(id)!
+}
+
+/** Read back a job's frozen label geometry, or null if it has no snapshot. */
+export function getJobLabelSize(job: PrintJob): JobLabelSize | null {
+  if (job.label_width_dots === null || job.label_height_dots === null) return null
+  return {
+    widthDots: job.label_width_dots,
+    heightDots: job.label_height_dots,
+    dpi: job.label_dpi ?? DEFAULT_DPI
+  }
 }
 
 /** Get a job by ID */
@@ -159,6 +202,36 @@ export function claimJob(id: string): boolean {
     return true
   }
   return false
+}
+
+/**
+ * Mark jobs abandoned mid-print as failed.
+ *
+ * Only used for locally printed jobs: those are claimed as 'printing' and then
+ * finalized by the browser over HTTP. If that call never arrives — the tab was
+ * closed, the machine slept — the job would sit in 'printing' indefinitely.
+ * Server-side jobs don't need this since the print call completes in-process.
+ *
+ * @returns the number of jobs failed.
+ */
+export function failStalePrintingJobs(printerName: string, olderThanSeconds: number): number {
+  const db = getDb()
+  const stale = db.select({ id: printJobs.id })
+    .from(printJobs)
+    .where(and(
+      eq(printJobs.status, 'printing'),
+      eq(printJobs.printerName, printerName),
+      sql`${printJobs.startedAt} < datetime('now', ${`-${olderThanSeconds} seconds`})`
+    ))
+    .all()
+
+  for (const job of stale) {
+    updateJobStatus(job.id, 'failed', {
+      errorMessage: `No result reported within ${olderThanSeconds}s — the printing client likely went away`
+    })
+  }
+
+  return stale.length
 }
 
 /** Set the ZPL commands for a job */
