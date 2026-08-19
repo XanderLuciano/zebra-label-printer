@@ -555,10 +555,10 @@ async function runCalibration() {
         <div class="flex items-center gap-2">
           <UIcon name="i-lucide-refresh-cw" />
           <span class="font-medium">Updates</span>
-          <UBadge v-if="version?.updateAvailable" variant="subtle" color="amber" size="xs">
+          <UBadge v-if="version?.updateAvailable" variant="subtle" color="warning" size="xs">
             v{{ version.latest }} available
           </UBadge>
-          <UBadge v-else-if="version?.latest" variant="subtle" color="green" size="xs">
+          <UBadge v-else-if="version?.latest" variant="subtle" color="success" size="xs">
             Up to date
           </UBadge>
         </div>
@@ -609,7 +609,7 @@ async function runCalibration() {
     <div v-if="saved" class="fixed bottom-6 right-6 z-50">
       <UAlert
         title="Settings saved"
-        color="green"
+        color="success"
         variant="soft"
         icon="i-lucide-check-circle"
         :close-button="{ onClick: () => { saved = false } }"

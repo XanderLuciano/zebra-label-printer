@@ -3,8 +3,17 @@ const api = useApi();
 
 const { data: debug, refresh } = useAsyncData('debug-page', () => api.getDebug());
 
-// Auto-refresh
-useIntervalFn(() => refresh(), 5000);
+// Poll while the page is open. Plain setInterval rather than VueUse's
+// useIntervalFn: VueUse is only present as a transitive dependency of @nuxt/ui
+// and @vueuse/nuxt isn't registered, so useIntervalFn was never auto-imported
+// and threw a ReferenceError here, taking the whole page down with it.
+let pollInterval: ReturnType<typeof setInterval> | null = null;
+onMounted(() => {
+  pollInterval = setInterval(() => refresh(), 5000);
+});
+onUnmounted(() => {
+  if (pollInterval) clearInterval(pollInterval);
+});
 
 const formatBytes = (b: number) => b > 1024 * 1024 ? `${(b / 1024 / 1024).toFixed(2)} MB` : `${(b / 1024).toFixed(1)} KB`;
 const formatUptime = (s: number) => {
@@ -146,7 +155,7 @@ const formatUptime = (s: number) => {
         >
           <span class="text-gray-400 font-mono w-20 shrink-0">{{ new Date(event.created_at + 'Z').toLocaleTimeString() }}</span>
           <UBadge
-            :color="event.event_type === 'disconnected' ? 'red' : event.event_type === 'recovered' ? 'green' : 'gray'"
+            :color="event.event_type === 'disconnected' ? 'error' : event.event_type === 'recovered' ? 'success' : 'neutral'"
             variant="subtle"
             size="xs"
           >

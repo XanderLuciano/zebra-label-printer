@@ -7,8 +7,23 @@
  *   await api.printText({ lines: ['Hello'] })
  */
 
+import type { LabelTemplate } from './useTemplateEngine';
+
 export type JobStatus = 'pending' | 'printing' | 'completed' | 'failed' | 'cancelled';
 export type JobType = 'text' | 'barcode' | 'qr' | 'zpl' | 'label';
+
+/**
+ * A template as the API returns it: the stored definition plus server metadata.
+ *
+ * Mirrors StoredTemplate in src/db/template-repo.ts. Previously these endpoints
+ * were typed as `{ id, name, [k: string]: unknown }`, which meant callers had to
+ * cast to LabelTemplate and lost any guarantee the layout fields were present.
+ */
+export interface StoredTemplate extends LabelTemplate {
+  id: string;
+  createdAt: string;
+  updatedAt: string;
+}
 
 /** Where a label is printed: via the server's CUPS queue, or the browser's USB printer */
 export type PrintTargetName = 'server' | 'local';
@@ -78,11 +93,26 @@ export interface PrinterEvent {
   created_at: string;
 }
 
+/**
+ * Node's process.memoryUsage() shape.
+ *
+ * Spelled out rather than Record<string, number> so indexing it doesn't yield
+ * `number | undefined` under noUncheckedIndexedAccess — these keys are always
+ * present, and the weak type just forced callers to guard against nothing.
+ */
+export interface ProcessMemoryUsage {
+  rss: number;
+  heapTotal: number;
+  heapUsed: number;
+  external: number;
+  arrayBuffers: number;
+}
+
 export interface DebugInfo {
   printer: { name: string; isReady: boolean };
   queue: { pending: number; processorRunning: boolean };
   database: { path: string; sizeBytes: number; sizeFormatted: string; stats: JobStats };
-  server: { uptime: number; memory: Record<string, number>; nodeVersion: string };
+  server: { uptime: number; memory: ProcessMemoryUsage; nodeVersion: string };
   printerEvents: PrinterEvent[];
 }
 
@@ -133,13 +163,13 @@ export function useApi() {
 
     // Templates
     listTemplates: () =>
-      get<{ templates: Array<{ id: string; name: string; [k: string]: unknown }> }>('/api/templates'),
+      get<{ templates: StoredTemplate[] }>('/api/templates'),
     getTemplate: (id: string) =>
-      get<{ template: { id: string; name: string; [k: string]: unknown } }>(`/api/templates/${id}`),
+      get<{ template: StoredTemplate }>(`/api/templates/${id}`),
     createTemplate: (data: Record<string, unknown>) =>
-      post<{ template: { id: string; name: string; [k: string]: unknown } }>('/api/templates', data),
+      post<{ template: StoredTemplate }>('/api/templates', data),
     updateTemplate: (id: string, data: Record<string, unknown>) =>
-      $fetch<{ template: { id: string; name: string; [k: string]: unknown } }>(`${base}/api/templates/${id}`, {
+      $fetch<{ template: StoredTemplate }>(`${base}/api/templates/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data),

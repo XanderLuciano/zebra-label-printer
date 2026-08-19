@@ -7,7 +7,7 @@
  * Labelary rendering. Templates auto-scale to any label size; overrides let you
  * fine-tune a design for a specific size.
  */
-import type { LabelTemplate, TemplateElement, ElementType } from '../composables/useTemplateEngine'
+import type { LabelTemplate, TemplateElement, ElementType, BarcodeType } from '../composables/useTemplateEngine'
 import {
   emptyTemplate, newElement, resolveTemplate, toPrintElements, sizeKey,
   SIZE_PRESETS, BARCODE_TYPES, ZPL_FONTS, DPI,
@@ -32,7 +32,9 @@ const targetW = ref(template.value.baseWidthDots)
 const targetH = ref(template.value.baseHeightDots)
 
 const savedTemplates = ref<Array<{ id: string; name: string }>>([])
-const loadId = ref<string | null>(null)
+// undefined rather than null: USelect's modelValue is `string | undefined`, and
+// both render as "nothing selected".
+const loadId = ref<string | undefined>(undefined)
 const saving = ref(false)
 const printing = ref(false)
 
@@ -109,7 +111,10 @@ const f = reactive({
   font: fieldModel<string>('font'),
   reverse: fieldModel<boolean>('reverse'),
   align: fieldModel<string>('align'),
-  barcodeType: fieldModel<string>('barcodeType'),
+  // Typed as BarcodeType, not string: it's bound to a USelect built from
+  // BARCODE_TYPES, so widening to string would discard the only check that a
+  // valid symbology reaches the printer.
+  barcodeType: fieldModel<BarcodeType>('barcodeType'),
   heightPct: fieldModel<number>('heightPct', true),
   narrowBarWidth: fieldModel<number>('narrowBarWidth', true),
   humanReadable: fieldModel<boolean>('humanReadable'),
@@ -136,8 +141,10 @@ function addElement(type: ElementType) {
 
 function deleteElement(id: string) {
   template.value.elements = template.value.elements.filter(e => e.id !== id)
-  for (const key of Object.keys(template.value.overrides)) {
-    Reflect.deleteProperty(template.value.overrides[key], id)
+  // Iterate values, not keys: an indexed lookup is `| undefined` under
+  // noUncheckedIndexedAccess even though the key demonstrably exists.
+  for (const sizeOverrides of Object.values(template.value.overrides)) {
+    Reflect.deleteProperty(sizeOverrides, id)
   }
   if (selectedId.value === id) selectedId.value = null
 }
@@ -258,7 +265,7 @@ async function save() {
 async function loadTemplate(id: string) {
   try {
     const res = await api.getTemplate(id)
-    const t = res.template as LabelTemplate
+    const t = res.template
     template.value = {
       id: t.id,
       name: t.name,
@@ -287,7 +294,7 @@ function newTemplate() {
   targetW.value = template.value.baseWidthDots
   targetH.value = template.value.baseHeightDots
   selectedId.value = null
-  loadId.value = null
+  loadId.value = undefined
 }
 
 async function removeTemplate() {

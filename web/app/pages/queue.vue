@@ -8,12 +8,17 @@ const { data, refresh } = useAsyncData('queue-jobs', () =>
 
 watch(statusFilter, () => refresh());
 
-// Auto-refresh
-const { pause } = useIntervalFn(() => {
-  refresh();
-}, 5000);
-
-onUnmounted(pause);
+// Poll while the page is open. Plain setInterval rather than VueUse's
+// useIntervalFn: VueUse is only present as a transitive dependency of @nuxt/ui
+// and @vueuse/nuxt isn't registered, so useIntervalFn was never auto-imported
+// and threw a ReferenceError here, taking the whole page down with it.
+let pollInterval: ReturnType<typeof setInterval> | null = null;
+onMounted(() => {
+  pollInterval = setInterval(() => refresh(), 5000);
+});
+onUnmounted(() => {
+  if (pollInterval) clearInterval(pollInterval);
+});
 
 // Job detail
 const selectedJobId = ref(useRoute().query.job as string || '');
@@ -28,12 +33,17 @@ async function cancelJob(id: string) {
   refresh();
 }
 
-const statusColors: Record<string, string> = {
-  pending: 'amber',
-  printing: 'blue',
-  completed: 'green',
-  failed: 'red',
-  cancelled: 'gray',
+// NuxtUI v4 accepts only semantic colour aliases, not Tailwind palette names.
+// Typed rather than Record<string, string> so a bad value is a compile error —
+// the previous map held 'amber'/'blue'/'green'/'red'/'gray' and rendered every
+// badge unstyled, hidden from the typecheck by `as any` at the call sites.
+type BadgeColor = 'warning' | 'info' | 'success' | 'error' | 'neutral';
+const statusColors: Record<string, BadgeColor> = {
+  pending: 'warning',
+  printing: 'info',
+  completed: 'success',
+  failed: 'error',
+  cancelled: 'neutral',
 };
 
 function formatDate(d: string) {
@@ -81,7 +91,7 @@ function formatDate(d: string) {
           >
             <div class="flex items-center justify-between">
               <div>
-                <UBadge :color="statusColors[job.status] as any" variant="subtle" size="xs" class="mb-1">
+                <UBadge :color="statusColors[job.status] ?? 'neutral'" variant="subtle" size="xs" class="mb-1">
                   {{ job.status }}
                 </UBadge>
                 <p class="text-sm font-mono text-gray-400">{{ job.id.slice(-8) }}</p>
@@ -103,7 +113,7 @@ function formatDate(d: string) {
             <UButton
               v-if="jobDetail.job.status === 'pending'"
               label="Cancel"
-              color="red"
+              color="error"
               variant="outline"
               size="xs"
               @click="cancelJob(jobDetail.job.id)"
@@ -115,7 +125,7 @@ function formatDate(d: string) {
           <div class="grid grid-cols-2 gap-3 text-sm">
             <div>
               <span class="text-gray-500">Status</span>
-              <p><UBadge :color="statusColors[jobDetail.job.status] as any" variant="subtle" size="xs">{{ jobDetail.job.status }}</UBadge></p>
+              <p><UBadge :color="statusColors[jobDetail.job.status] ?? 'neutral'" variant="subtle" size="xs">{{ jobDetail.job.status }}</UBadge></p>
             </div>
             <div>
               <span class="text-gray-500">Type</span>
