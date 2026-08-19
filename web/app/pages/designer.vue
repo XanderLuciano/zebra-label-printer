@@ -7,7 +7,10 @@
  * Labelary rendering. Templates auto-scale to any label size; overrides let you
  * fine-tune a design for a specific size.
  */
-import type { LabelTemplate, TemplateElement, ElementType, BarcodeType } from '../composables/useTemplateEngine'
+import type {
+  LabelTemplate, TemplateElement, ElementType,
+  BarcodeType, Rotation, ErrorCorrection, TextAlign,
+} from '../composables/useTemplateEngine'
 import {
   emptyTemplate, newElement, resolveTemplate, toPrintElements, sizeKey,
   SIZE_PRESETS, BARCODE_TYPES, ZPL_FONTS, DPI,
@@ -104,13 +107,13 @@ const f = reactive({
   content: fieldModel<string>('content'),
   xPct: fieldModel<number>('xPct', true),
   yPct: fieldModel<number>('yPct', true),
-  rotation: fieldModel<string>('rotation'),
+  rotation: fieldModel<Rotation>('rotation'),
   hidden: fieldModel<boolean>('hidden'),
   fontHeightPct: fieldModel<number>('fontHeightPct', true),
   ratio: fieldModel<number>('ratio', true),
   font: fieldModel<string>('font'),
   reverse: fieldModel<boolean>('reverse'),
-  align: fieldModel<string>('align'),
+  align: fieldModel<TextAlign>('align'),
   // Typed as BarcodeType, not string: it's bound to a USelect built from
   // BARCODE_TYPES, so widening to string would discard the only check that a
   // valid symbology reaches the printer.
@@ -119,7 +122,7 @@ const f = reactive({
   narrowBarWidth: fieldModel<number>('narrowBarWidth', true),
   humanReadable: fieldModel<boolean>('humanReadable'),
   magnification: fieldModel<number>('magnification', true),
-  errorCorrection: fieldModel<string>('errorCorrection'),
+  errorCorrection: fieldModel<ErrorCorrection>('errorCorrection'),
   widthPct: fieldModel<number>('widthPct', true),
   thickness: fieldModel<number>('thickness', true),
   rounding: fieldModel<number>('rounding', true),
@@ -208,14 +211,17 @@ const sizeItems = SIZE_PRESETS.map(s => ({
 }))
 const fontItems = ZPL_FONTS.map(v => ({ label: `Font ${v}`, value: v }))
 const barcodeItems = BARCODE_TYPES.map(v => ({ label: v, value: v }))
-const rotationItems = [
+// Annotated rather than inferred: without the value type these arrays infer
+// `value: string`, which widens the bound USelect and silently allows an invalid
+// value to reach the ZPL builder.
+const rotationItems: Array<{ label: string; value: Rotation }> = [
   { label: '0°', value: 'N' }, { label: '90°', value: 'R' },
   { label: '180°', value: 'I' }, { label: '270°', value: 'B' },
 ]
-const alignItems = [
+const alignItems: Array<{ label: string; value: TextAlign }> = [
   { label: 'Left', value: 'left' }, { label: 'Center', value: 'center' }, { label: 'Right', value: 'right' },
 ]
-const ecItems = [
+const ecItems: Array<{ label: string; value: ErrorCorrection }> = [
   { label: 'L (7%)', value: 'L' }, { label: 'M (15%)', value: 'M' },
   { label: 'Q (25%)', value: 'Q' }, { label: 'H (30%)', value: 'H' },
 ]

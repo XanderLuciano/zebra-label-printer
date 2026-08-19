@@ -1,0 +1,16 @@
+{
+  // Entry point for the web app's TypeScript project.
+  // Nuxt generates the referenced configs into .nuxt/ on dev/build.
+  // https://nuxt.com/docs/guide/concepts/typescript
+  //
+  // Without this file, TypeScript walks up and typechecks the web app against
+  // the backend's ../tsconfig.json (CommonJS, moduleResolution: node), which is
+  // the wrong config entirely.
+  "files": [],
+  "references": [
+    { "path": "./.nuxt/tsconfig.app.json" },
+    { "path": "./.nuxt/tsconfig.server.json" },
+    { "path": "./.nuxt/tsconfig.shared.json" },
+    { "path": "./.nuxt/tsconfig.node.json" }
+  ]
+}

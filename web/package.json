@@ -7,7 +7,10 @@
     "dev": "nuxt dev",
     "build": "nuxt build",
     "generate": "nuxt generate",
-    "preview": "nuxt preview"
+    "preview": "nuxt preview",
+    "typecheck": "nuxt typecheck",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix"
   },
   "dependencies": {
     "@iconify-json/lucide": "^1.2.0",
@@ -16,6 +19,7 @@
   },
   "devDependencies": {
     "@nuxt/eslint": "^1.0.0",
-    "vue-tsc": "2.2.10"
+    "typescript": "~6.0.3",
+    "vue-tsc": "3.3.10"
   }
 }

@@ -13,6 +13,8 @@
 
 export type Rotation = 'N' | 'R' | 'I' | 'B'
 export type ErrorCorrection = 'L' | 'M' | 'Q' | 'H'
+/** Which edge of a text element `xPct`/`yPct` anchors to */
+export type TextAlign = 'left' | 'center' | 'right'
 export type BarcodeType =
   | 'CODE128' | 'CODE39' | 'CODE93' | 'EAN8' | 'EAN13'
   | 'UPCA' | 'UPCE' | 'CODABAR' | 'PDF417' | 'QRCODE' | 'DATAMATRIX'
@@ -41,7 +43,7 @@ export interface TextEl extends BaseEl {
   ratio?: number
   font?: string
   reverse?: boolean
-  align?: 'left' | 'center' | 'right'
+  align?: TextAlign
 }
 
 export interface BarcodeEl extends BaseEl {
