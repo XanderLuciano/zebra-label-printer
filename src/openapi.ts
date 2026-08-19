@@ -107,13 +107,18 @@ export const OPENAPI_SPEC = {
                     minimum: 1,
                     maximum: 10,
                     default: 1
-                  }
+                  },
+                  target: { $ref: '#/components/schemas/PrintTarget' }
                 }
               },
               examples: {
                 simple: {
                   summary: 'Simple label',
                   value: { lines: ['Kitchen Utensils'] }
+                },
+                localUsb: {
+                  summary: 'Record the job and return ZPL for local USB printing',
+                  value: { lines: ['Kitchen Utensils'], target: 'local' }
                 },
                 multiLine: {
                   summary: 'Multi-line label',
@@ -163,7 +168,8 @@ export const OPENAPI_SPEC = {
                     minimum: 10,
                     maximum: 1000,
                     description: 'Barcode height in dots'
-                  }
+                  },
+                  target: { $ref: '#/components/schemas/PrintTarget' }
                 }
               },
               examples: {
@@ -210,7 +216,8 @@ export const OPENAPI_SPEC = {
                     maximum: 10,
                     default: 5,
                     description: 'QR code size multiplier'
-                  }
+                  },
+                  target: { $ref: '#/components/schemas/PrintTarget' }
                 }
               }
             }
@@ -241,7 +248,10 @@ export const OPENAPI_SPEC = {
               schema: {
                 type: 'object',
                 required: ['zpl'],
-                properties: { zpl: { type: 'string' } }
+                properties: {
+                  zpl: { type: 'string' },
+                  target: { $ref: '#/components/schemas/PrintTarget' }
+                }
               }
             }
           }
@@ -274,7 +284,8 @@ export const OPENAPI_SPEC = {
                     minItems: 1,
                     items: { $ref: '#/components/schemas/LabelElement' }
                   },
-                  copies: { type: 'integer', minimum: 1, maximum: 10 }
+                  copies: { type: 'integer', minimum: 1, maximum: 10 },
+                  target: { $ref: '#/components/schemas/PrintTarget' }
                 }
               },
               examples: {
@@ -689,6 +700,180 @@ export const OPENAPI_SPEC = {
         }
       }
     },
+    '/api/jobs/{id}/result': {
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string' }, description: 'Job id' }
+      ],
+      post: {
+        summary: 'Report the outcome of a locally printed job',
+        operationId: 'reportJobResult',
+        tags: ['Jobs'],
+        description: 'Called after a job requested with `target: "local"` has been transmitted by the caller. Without this the job stays in the "printing" state indefinitely.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                required: ['success'],
+                properties: {
+                  success: { type: 'boolean' },
+                  error: { type: 'string', maxLength: 500, description: 'Failure detail, recorded on the job' }
+                }
+              },
+              examples: {
+                ok: { summary: 'Transfer succeeded', value: { success: true } },
+                failed: { summary: 'Transfer failed', value: { success: false, error: 'USB transfer failed (stall)' } }
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'Job finalized',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { const: true },
+                    jobId: { type: 'string' },
+                    status: { type: 'string', enum: ['completed', 'failed'] }
+                  }
+                }
+              }
+            }
+          },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '404': { description: 'Job not found' },
+          '503': { description: 'Job queue unavailable' }
+        }
+      }
+    },
+    '/api/printer/configure': {
+      post: {
+        summary: 'Apply media geometry to the printer',
+        operationId: 'configurePrinter',
+        tags: ['Printer'],
+        description: [
+          'Sends the media configuration to the printer: `^PW` (print width), `^ML` (maximum label length, set an inch past the label so the gap search can reach the next gap), `^MN` (media tracking) and `^LH0,0`. Saved to non-volatile memory with `^JUS` unless `persist: false`.',
+          '',
+          '`^LL` is only sent for `continuous` tracking. Zebra documents it as ignored on non-continuous gap/mark media, where the real label length comes from the gap sensor during calibration.',
+          '',
+          'Saving a label size via PUT /api/label-size already does this, so calling it directly is only needed to re-apply after a printer power cycle or to change tracking mode.',
+          '',
+          'Omitted dimensions fall back to the configured label size, so an empty body means "apply the current label size".'
+        ].join('\n'),
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: {
+                  widthDots: { type: 'integer', minimum: 100, maximum: 2400 },
+                  heightDots: { type: 'integer', minimum: 50, maximum: 7967 },
+                  dpi: { type: 'integer', enum: [203, 300, 600], default: 203 },
+                  tracking: { $ref: '#/components/schemas/MediaTracking' },
+                  markOffset: {
+                    type: 'integer',
+                    minimum: -240,
+                    maximum: 566,
+                    description: 'Black mark offset in dots. Only used when tracking is "mark".'
+                  },
+                  persist: { type: 'boolean', default: true, description: 'Save to the printer\'s non-volatile memory (^JUS)' },
+                  calibrate: { type: 'boolean', default: false, description: 'Run a sensor calibration (~JC) straight after applying. Feeds 2-4 labels.' },
+                  target: { $ref: '#/components/schemas/PrintTarget' }
+                }
+              },
+              examples: {
+                current: { summary: 'Apply the configured label size', value: {} },
+                dieCut: {
+                  summary: '2x1" die-cut labels, then calibrate',
+                  value: { widthDots: 406, heightDots: 203, tracking: 'gap', calibrate: true }
+                },
+                continuous: {
+                  summary: 'Continuous roll (label length comes from ^LL)',
+                  value: { widthDots: 406, heightDots: 203, tracking: 'continuous' }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'Configuration applied, or returned as ZPL when target is "local"',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean' },
+                    target: { $ref: '#/components/schemas/PrintTarget' },
+                    zpl: { type: 'string', description: 'Present only when target is "local"' },
+                    error: { type: 'string' },
+                    applied: {
+                      type: 'object',
+                      properties: {
+                        widthDots: { type: 'integer' },
+                        heightDots: { type: 'integer' },
+                        dpi: { type: 'integer' },
+                        tracking: { $ref: '#/components/schemas/MediaTracking' },
+                        calibrated: { type: 'boolean' }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '500': { description: 'The printer rejected the configuration' },
+          '503': { description: 'No printer connected' }
+        }
+      }
+    },
+    '/api/printer/calibrate': {
+      post: {
+        summary: 'Run a media sensor calibration',
+        operationId: 'calibratePrinter',
+        tags: ['Printer'],
+        description: 'Sends `~JC`. The printer feeds 2-4 labels while measuring gap/mark sensor thresholds and the actual label length; this is what removes cumulative vertical drift after a media change. Apply the media configuration first so calibration knows the media type and search window.',
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: {
+                type: 'object',
+                properties: { target: { $ref: '#/components/schemas/PrintTarget' } }
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'Calibration started, or returned as ZPL when target is "local"',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    success: { type: 'boolean' },
+                    target: { $ref: '#/components/schemas/PrintTarget' },
+                    zpl: { type: 'string', description: 'Present only when target is "local"' },
+                    message: { type: 'string' },
+                    error: { type: 'string' }
+                  }
+                }
+              }
+            }
+          },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '500': { description: 'The printer rejected the calibration command' },
+          '503': { description: 'No printer connected' }
+        }
+      }
+    },
     '/api/settings': {
       get: {
         summary: 'Get all settings',
@@ -762,6 +947,7 @@ export const OPENAPI_SPEC = {
         summary: 'Set the current label size',
         operationId: 'setLabelSize',
         tags: ['Settings'],
+        description: 'Saves the label size and also pushes the geometry to the connected printer (see POST /api/printer/configure). Saving the setting alone would only change the ZPL we generate — the printer keeps its own stored print width and media settings, which is how a size change ends up producing clipped or drifting labels. Pass `applyToPrinter: false` to skip that, for example when the browser owns the printer over WebUSB.',
         requestBody: {
           required: true,
           content: {
@@ -772,7 +958,16 @@ export const OPENAPI_SPEC = {
                 properties: {
                   widthDots: { type: 'integer', minimum: 100 },
                   heightDots: { type: 'integer', minimum: 50 },
-                  name: { type: 'string' }
+                  name: { type: 'string' },
+                  applyToPrinter: { type: 'boolean', default: true, description: 'Push the geometry to the connected printer' },
+                  tracking: { $ref: '#/components/schemas/MediaTracking' }
+                }
+              },
+              examples: {
+                standard: { summary: '2x1" labels', value: { widthDots: 406, heightDots: 203, name: '2x1"' } },
+                settingOnly: {
+                  summary: 'Save without touching the printer',
+                  value: { widthDots: 406, heightDots: 203, applyToPrinter: false }
                 }
               }
             }
@@ -787,7 +982,15 @@ export const OPENAPI_SPEC = {
                   type: 'object',
                   properties: {
                     success: { const: true },
-                    size: { $ref: '#/components/schemas/LabelSize' }
+                    size: { $ref: '#/components/schemas/LabelSize' },
+                    printerConfig: {
+                      type: 'object',
+                      description: 'Whether the geometry reached the printer',
+                      properties: {
+                        applied: { type: 'boolean' },
+                        error: { type: 'string' }
+                      }
+                    }
                   }
                 }
               }
@@ -1022,7 +1225,8 @@ export const OPENAPI_SPEC = {
               x: { type: 'integer' },
               y: { type: 'integer' },
               magnification: { type: 'integer', minimum: 1, maximum: 10 },
-              errorCorrection: { type: 'string', enum: ['L', 'M', 'Q', 'H'] }
+              errorCorrection: { type: 'string', enum: ['L', 'M', 'Q', 'H'] },
+              rotation: { type: 'string', enum: ['N', 'R', 'I', 'B'], default: 'N' }
             }
           }
         }
@@ -1215,11 +1419,34 @@ export const OPENAPI_SPEC = {
           printer_name: { type: ['string', 'null'] },
           cups_job_id: { type: ['string', 'null'] },
           error_message: { type: ['string', 'null'] },
+          label_width_dots: {
+            type: ['integer', 'null'],
+            description: 'Label width the job was rendered for, frozen at creation. Null on jobs created before this was recorded.'
+          },
+          label_height_dots: {
+            type: ['integer', 'null'],
+            description: 'Label height the job was rendered for, frozen at creation.'
+          },
+          label_dpi: {
+            type: ['integer', 'null'],
+            description: 'Print head resolution the job was rendered for.'
+          },
           created_at: { type: 'string' },
           started_at: { type: ['string', 'null'] },
           completed_at: { type: ['string', 'null'] },
           priority: { type: 'integer' }
         }
+      },
+      MediaTracking: {
+        type: 'string',
+        enum: ['gap', 'mark', 'continuous', 'auto'],
+        description: 'How the printer finds the top of each label (ZPL ^MN). "gap" is die-cut stock, "continuous" is an unmarked roll.'
+      },
+      PrintTarget: {
+        type: 'string',
+        enum: ['server', 'local'],
+        default: 'server',
+        description: 'Where the label is printed. "server" prints via CUPS on the host. "local" records the job and returns the generated ZPL for the caller to transmit itself (used by the browser over WebUSB); report the outcome via POST /api/jobs/{id}/result.'
       },
       JobLogEntry: {
         type: 'object',
@@ -1270,14 +1497,30 @@ export const OPENAPI_SPEC = {
     },
     responses: {
       PrintSuccess: {
-        description: 'Label sent to printer',
+        description: 'Job recorded. Printed via CUPS, queued for retry, or returned as ZPL for the caller to transmit.',
         content: {
           'application/json': {
             schema: {
               type: 'object',
               properties: {
                 success: { type: 'boolean', example: true },
-                jobId: { type: 'string', example: 'ZTC-GK420d-3' }
+                jobId: { type: 'string', example: 'job_1712345678901_ab12cd' },
+                queued: { type: 'boolean', description: 'True when the printer was unavailable and the job will be retried' },
+                target: { $ref: '#/components/schemas/PrintTarget' },
+                zpl: {
+                  type: 'string',
+                  description: 'Generated ZPL. Present only when `target: "local"` was requested — transmit it yourself, then POST the outcome to /api/jobs/{id}/result.'
+                },
+                labelSize: {
+                  type: 'object',
+                  description: 'Label geometry this job was rendered for, also frozen onto the job record.',
+                  properties: {
+                    widthDots: { type: 'integer' },
+                    heightDots: { type: 'integer' },
+                    dpi: { type: 'integer' }
+                  }
+                },
+                error: { type: 'string' }
               }
             }
           }
@@ -1377,6 +1620,7 @@ export const OPENAPI_SPEC = {
     { name: 'Rendering', description: 'Build ZPL without printing (for previews)' },
     { name: 'Templates', description: 'Reusable, auto-scaling label templates' },
     { name: 'Jobs', description: 'Print queue and job management' },
+    { name: 'Printer', description: 'Media configuration and sensor calibration' },
     { name: 'Settings', description: 'Server settings and label sizing' },
     { name: 'Maintenance', description: 'Version checks and self-update' }
   ]

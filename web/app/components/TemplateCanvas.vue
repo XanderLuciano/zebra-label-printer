@@ -7,8 +7,11 @@
  * percentage coordinates so the parent can write to the base template or a
  * per-size override.
  */
-import type { LabelTemplate } from '../composables/useTemplateEngine'
+import type { LabelTemplate, Rotation } from '../composables/useTemplateEngine'
 import { resolveTemplate, effectiveElement } from '../composables/useTemplateEngine'
+
+/** Degree labels for the rotation marker on the selected element */
+const rotationLabels: Record<Rotation, string> = { N: '0°', R: '90°', I: '180°', B: '270°' }
 
 const props = withDefaults(defineProps<{
   template: LabelTemplate
@@ -120,8 +123,14 @@ function barX(el: { x: number; w: number }, j: number) {
       <rect x="0" y="0" :width="widthDots" :height="heightDots" fill="white" @pointerdown.self="onBackgroundClick" />
 
       <template v-for="el in resolved" :key="el.id">
+        <!--
+          Shapes are drawn in the element's unrotated coordinate space; the
+          group transform rotates them into the position ZPL would print them.
+          See rotationTransform() in useTemplateEngine.
+        -->
         <g
           class="cursor-move"
+          :transform="el.transform || undefined"
           @pointerdown="onPointerDown(el.id, $event)"
         >
           <!-- Text -->
@@ -185,12 +194,13 @@ function barX(el: { x: number; w: number }, j: number) {
             </template>
           </g>
 
-          <!-- Selection outline -->
+          <!-- Selection outline — inside the rotated group, so it hugs the
+               element in its printed orientation -->
           <rect
             v-if="el.id === selectedId"
             :x="el.x - 4"
             :y="el.y - 4"
-            :width="(el.type === 'text' ? el.w : el.w) + 8"
+            :width="el.w + 8"
             :height="el.h + 8"
             fill="none"
             stroke="#3b82f6"
@@ -198,6 +208,19 @@ function barX(el: { x: number; w: number }, j: number) {
             stroke-dasharray="6 4"
             vector-effect="non-scaling-stroke"
           />
+        </g>
+
+        <!-- Rotation marker: the un-rotated footprint origin, so it's obvious
+             which corner stays pinned when rotation changes -->
+        <g v-if="el.id === selectedId && el.rotation !== 'N'" pointer-events="none">
+          <circle :cx="el.bounds.x" :cy="el.bounds.y" r="6" fill="#3b82f6" />
+          <text
+            :x="el.bounds.x + 12"
+            :y="el.bounds.y - 8"
+            font-size="18"
+            font-family="'Helvetica Neue', Arial, sans-serif"
+            fill="#3b82f6"
+          >{{ rotationLabels[el.rotation] }}</text>
         </g>
       </template>
     </svg>

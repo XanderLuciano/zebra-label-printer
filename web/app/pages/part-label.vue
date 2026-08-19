@@ -1,5 +1,9 @@
 <script setup lang="ts">
 const api = useApi();
+// Routes to the server queue or a local USB printer, per the Settings preference.
+const { printLabel, load: loadPrintTarget } = usePrintTarget();
+
+onMounted(loadPrintTarget);
 
 // Part label form
 const partForm = reactive({
@@ -216,6 +220,12 @@ function composeBagLabel(): Array<Record<string, unknown>> {
   return elements;
 }
 
+/** Print one label through the selected target, throwing on failure. */
+async function send(elements: Array<Record<string, unknown>>) {
+  const res = await printLabel({ elements });
+  if (!res.success) throw new Error(res.error || 'Print failed');
+}
+
 async function printPartLabel() {
   if (!partForm.partName.trim() || !partForm.partNumber.trim() || !partBarcode.value) return;
   partPrinting.value = true;
@@ -227,14 +237,12 @@ async function printPartLabel() {
     if (partForm.serialize) {
       // Print individual serialized labels (works for any quantity, including 1)
       for (let i = 0; i < partForm.quantity; i++) {
-        const serial = serialFor(i);
-        const elements = composeSingleLabel(serial);
-        await api.printLabel({ elements });
+        await send(composeSingleLabel(serialFor(i)));
       }
       // Print bag label(s)
       const bagElements = composeBagLabel();
       for (let i = 0; i < bagCount; i++) {
-        await api.printLabel({ elements: bagElements });
+        await send(bagElements);
       }
 
       const bagMsg = bagCount > 0 ? ` + ${bagCount} bag label${bagCount > 1 ? 's' : ''}` : '';
@@ -243,20 +251,19 @@ async function printPartLabel() {
       // Print identical individual labels via ^PQ
       const elements = composeSingleLabel();
       elements.push({ type: 'raw', zpl: `^PQ${partForm.quantity}` });
-      await api.printLabel({ elements });
+      await send(elements);
 
       // Print bag label(s)
       const bagElements = composeBagLabel();
       for (let i = 0; i < bagCount; i++) {
-        await api.printLabel({ elements: bagElements });
+        await send(bagElements);
       }
 
       const bagMsg = bagCount > 0 ? ` + ${bagCount} bag label${bagCount > 1 ? 's' : ''}` : '';
       partResult.value = `✅ Printed ${partForm.quantity} part labels${bagMsg}`;
     } else {
       // Single label (or qty shown on label)
-      const elements = composeSingleLabel();
-      await api.printLabel({ elements });
+      await send(composeSingleLabel());
       partResult.value = `✅ Printed "${partForm.partName}"`;
     }
   } catch (err) {

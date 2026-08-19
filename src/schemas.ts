@@ -6,6 +6,15 @@
  */
 
 import { z } from 'zod'
+import {
+  MEDIA_TRACKINGS,
+  MIN_LABEL_WIDTH_DOTS,
+  MIN_LABEL_HEIGHT_DOTS,
+  MAX_LABEL_LENGTH_DOTS
+} from './constants'
+
+/** Widest supported print head (4" at 600 DPI) */
+const MAX_LABEL_WIDTH_DOTS = 2400
 
 // ─── Shared ─────────────────────────────────────────────────────────────────
 
@@ -18,12 +27,27 @@ const errorCorrectionEnum = z.enum(['L', 'M', 'Q', 'H'])
 
 const rotationEnum = z.enum(['N', 'R', 'I', 'B'])
 
+/**
+ * Where the label is printed.
+ *
+ * 'server' goes through CUPS on the host. 'local' persists the job and returns
+ * the generated ZPL for the browser to push over WebUSB — the job still lands
+ * in history, it just isn't printed by this process.
+ */
+const printTargetEnum = z.enum(['server', 'local'])
+
+/** Fields every print endpoint accepts */
+const printTargetFields = {
+  target: printTargetEnum.optional().default('server')
+}
+
 // ─── Endpoint Schemas ───────────────────────────────────────────────────────
 
 /** POST /api/print/text */
 export const textLabelSchema = z.object({
   lines: z.array(z.string().min(1)).min(1, 'At least one line required').max(20, 'Max 20 lines'),
-  copies: z.number().int().min(1).max(10).optional()
+  copies: z.number().int().min(1).max(10).optional(),
+  ...printTargetFields
 }).strict()
 
 /** POST /api/print/barcode */
@@ -31,21 +55,24 @@ export const barcodeLabelSchema = z.object({
   data: z.string().min(1, 'Barcode data is required'),
   type: barcodeTypeEnum.optional().default('CODE128'),
   text: z.string().optional(),
-  height: z.number().int().min(10).max(1000).optional()
+  height: z.number().int().min(10).max(1000).optional(),
+  ...printTargetFields
 }).strict()
 
 /** POST /api/print/qr */
 export const qrLabelSchema = z.object({
   data: z.string().min(1, 'QR code data is required'),
   text: z.string().optional(),
-  magnification: z.number().int().min(1).max(10).optional().default(5)
+  magnification: z.number().int().min(1).max(10).optional().default(5),
+  ...printTargetFields
 }).strict()
 
 /** POST /api/print/zpl — accepts raw string or JSON object */
 export const zplSchema = z.union([
   z.string().min(1, 'ZPL commands required'),
   z.object({
-    zpl: z.string().min(1, 'ZPL commands required')
+    zpl: z.string().min(1, 'ZPL commands required'),
+    ...printTargetFields
   }).strict()
 ])
 
@@ -89,7 +116,8 @@ const qrElementSchema = z.object({
     x: z.number().int().min(0),
     y: z.number().int().min(0),
     magnification: z.number().int().min(1).max(10).optional(),
-    errorCorrection: errorCorrectionEnum.optional()
+    errorCorrection: errorCorrectionEnum.optional(),
+    rotation: rotationEnum.optional()
   }).strict()
 }).strict()
 
@@ -108,7 +136,8 @@ const labelElementSchema = z.discriminatedUnion('type', [
 /** POST /api/print/label */
 export const labelSchema = z.object({
   elements: z.array(labelElementSchema).min(1, 'At least one element required'),
-  copies: z.number().int().min(1).max(10).optional()
+  copies: z.number().int().min(1).max(10).optional(),
+  ...printTargetFields
 }).strict()
 
 /** POST /api/render/zpl — build ZPL from elements without printing (for previews) */
@@ -224,6 +253,45 @@ export const clearJobsSchema = z.object({
   olderThanDays: z.number().int().min(1).max(365).optional()
 }).strict()
 
+/**
+ * POST /api/jobs/:id/result — report the outcome of a locally printed job.
+ *
+ * Used by the browser after a WebUSB transfer so the job doesn't sit in
+ * 'printing' forever.
+ */
+export const jobResultSchema = z.object({
+  success: z.boolean(),
+  error: z.string().max(500).optional()
+}).strict()
+
+// ─── Printer media configuration ────────────────────────────────────────────
+
+/**
+ * POST /api/printer/configure — push media geometry to the printer.
+ *
+ * Falls back to the configured label size when dimensions are omitted, so the
+ * common case is an empty body meaning "apply the current label size".
+ */
+export const printerConfigSchema = z.object({
+  widthDots: z.number().int().min(MIN_LABEL_WIDTH_DOTS).max(MAX_LABEL_WIDTH_DOTS).optional(),
+  heightDots: z.number().int().min(MIN_LABEL_HEIGHT_DOTS).max(MAX_LABEL_LENGTH_DOTS).optional(),
+  dpi: z.union([z.literal(203), z.literal(300), z.literal(600)]).optional(),
+  tracking: z.enum(MEDIA_TRACKINGS).optional(),
+  /** Black-mark offset in dots; only meaningful when tracking is 'mark' */
+  markOffset: z.number().int().min(-240).max(566).optional(),
+  /** Persist to the printer's non-volatile memory (^JUS) */
+  persist: z.boolean().optional(),
+  /** Run a sensor calibration (~JC) straight after applying the config */
+  calibrate: z.boolean().optional(),
+  /** 'local' returns the ZPL for the browser to send over WebUSB instead of printing */
+  target: printTargetEnum.optional().default('server')
+}).strict()
+
+/** POST /api/printer/calibrate */
+export const printerCalibrateSchema = z.object({
+  target: printTargetEnum.optional().default('server')
+}).strict()
+
 // ─── Type exports ───────────────────────────────────────────────────────────
 
 export type TextLabelRequest = z.infer<typeof textLabelSchema>
@@ -233,6 +301,9 @@ export type LabelRequest = z.infer<typeof labelSchema>
 export type RenderZplRequest = z.infer<typeof renderZplSchema>
 export type SerialLabelRequest = z.infer<typeof serialLabelSchema>
 export type ClearJobsRequest = z.infer<typeof clearJobsSchema>
+export type JobResultRequest = z.infer<typeof jobResultSchema>
+export type PrinterConfigRequest = z.infer<typeof printerConfigSchema>
+export type PrinterCalibrateRequest = z.infer<typeof printerCalibrateSchema>
 export type TemplateDefinition = z.infer<typeof templateSchema>
 export type TemplateVariable = z.infer<typeof templateVariableSchema>
 export type TemplateElement = z.infer<typeof templateElementSchema>

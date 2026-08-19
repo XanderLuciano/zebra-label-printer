@@ -11,13 +11,41 @@ import type {
   BarcodeType,
   QROptions,
   LabelElement,
-  LabelOptions
+  LabelOptions,
+  MediaConfigOptions
 } from './types'
+import type { MediaTracking } from './constants'
+import { LABEL_LENGTH_SEARCH_MARGIN_INCHES, MAX_LABEL_LENGTH_DOTS } from './constants'
 
 // ─── Constants ──────────────────────────────────────────────────────────────
 
 /** Default DPI for GK420d */
 export const ZEBRA_DPI = 203
+
+/**
+ * Media tracking mode → `^MN` parameter.
+ *
+ * Straight from the ZPL reference for `^MN`: `N` is *continuous* stock (no gap,
+ * notch, or mark), `Y`/`W` are non-continuous web sensing, `M` is mark sensing,
+ * and `A` auto-detects during calibration (G-series only, which includes the
+ * GK420d).
+ *
+ * The naming here is deliberate — `'continuous' → 'N'` is easy to invert by
+ * accident, and getting it backwards makes the printer feed blank labels
+ * forever because it stops looking for gaps.
+ *
+ * @see https://docs.zebra.com/us/en/printers/software/zpl-pg/c-zpl-zpl-commands/r-zpl-mn.html
+ */
+export const MEDIA_TRACKING_CODES: Record<MediaTracking, string> = {
+  /** Die-cut / gapped labels — non-continuous web sensing */
+  gap: 'Y',
+  /** Black-mark backing — non-continuous mark sensing */
+  mark: 'M',
+  /** Continuous roll — length comes from ^LL */
+  continuous: 'N',
+  /** Let the printer work it out during calibration */
+  auto: 'A'
+}
 
 /** Common label sizes (in dots at 203 DPI) */
 export const LABEL_SIZES = {
@@ -114,6 +142,58 @@ export class ZPLBuilder {
     return this
   }
 
+  /** Set print width in dots (`^PW`) */
+  printWidth(dots: number): this {
+    this.ensureStart()
+    this.options.width = dots
+    this.commands.push(`^PW${dots}`)
+    return this
+  }
+
+  /** Set label length in dots (`^LL`). Only honoured on continuous media. */
+  labelLength(dots: number): this {
+    this.ensureStart()
+    this.options.height = dots
+    this.commands.push(`^LL${dots}`)
+    return this
+  }
+
+  /**
+   * Set the maximum label length (`^ML`) — how far the printer will feed while
+   * hunting for a gap or mark. Too small and calibration never finds the gap.
+   */
+  maxLabelLength(dots: number): this {
+    this.ensureStart()
+    this.commands.push(`^ML${Math.min(Math.round(dots), MAX_LABEL_LENGTH_DOTS)}`)
+    return this
+  }
+
+  /**
+   * Set media tracking (`^MN`) — how the printer finds the top of each label.
+   *
+   * @param markOffset - Black-mark offset in dots; only meaningful for `mark`.
+   */
+  mediaTracking(tracking: MediaTracking, markOffset?: number): this {
+    this.ensureStart()
+    const code = MEDIA_TRACKING_CODES[tracking]
+    this.commands.push(
+      tracking === 'mark' && markOffset !== undefined
+        ? `^MN${code},${markOffset}`
+        : `^MN${code}`
+    )
+    return this
+  }
+
+  /**
+   * Persist the current configuration to the printer's non-volatile memory
+   * (`^JUS`), so it survives a power cycle.
+   */
+  saveConfig(): this {
+    this.ensureStart()
+    this.commands.push('^JUS')
+    return this
+  }
+
   /** Add a text field */
   text(content: string, options: TextOptions): this {
     this.ensureStart()
@@ -167,7 +247,7 @@ export class ZPLBuilder {
 
     // QR and Data Matrix use different fields
     if (options.type === 'QRCODE') {
-      field += `^BQN,2,${options.narrowBarWidth ?? 5}`
+      field += `^BQ${options.rotation ?? 'N'},2,${options.narrowBarWidth ?? 5}`
       field += `^FDLA,${this.escapeFieldData(content)}^FS`
     } else if (options.type === 'DATAMATRIX') {
       field += `^BX${options.rotation ?? 'N'},${options.height ?? 200},200`
@@ -197,7 +277,7 @@ export class ZPLBuilder {
     const ec = options.errorCorrection ?? 'M'
 
     let field = `^FO${options.x},${options.y}`
-    field += `^BQN,2,${mag}`
+    field += `^BQ${options.rotation ?? 'N'},2,${mag}`
     field += `^FD${ec}A,${this.escapeFieldData(content)}^FS`
     this.commands.push(field)
     return this
@@ -279,14 +359,91 @@ export class ZPLBuilder {
   }
 }
 
+// ─── Printer Media Configuration ────────────────────────────────────────────
+
+/**
+ * Build the ZPL that tells the printer what media is loaded.
+ *
+ * Sending this is what makes a label-size change actually take effect on the
+ * hardware. Without it the printer keeps using its own stored width and gap
+ * settings, so labels come out clipped, offset, or with blank feeds even though
+ * the app thinks it changed size.
+ *
+ * Commands emitted:
+ *   - `^PW`  print width in dots
+ *   - `^ML`  maximum label length — the gap-search window
+ *   - `^LL`  label length, **continuous media only** (see below)
+ *   - `^LH`  reset the label home origin to 0,0
+ *   - `^MN`  media tracking mode
+ *   - `^JUS` persist to non-volatile memory (optional)
+ *
+ * `^LL` is deliberately omitted for gap/mark media: Zebra documents it as
+ * ignored on non-continuous stock, where the real length comes from the gap
+ * sensor during calibration. Emitting it there is misleading at best.
+ * `^ML` is what bounds the search, and it is set a full inch longer than the
+ * label so the printer can actually reach the next gap.
+ *
+ * @see https://supportcommunity.zebra.com/s/article/ZPL-Label-Length-Command-Information-with-Stored-Format-Details
+ */
+export function mediaConfigZpl(options: MediaConfigOptions): string {
+  const dpi = options.dpi ?? ZEBRA_DPI
+  const tracking = options.tracking ?? 'gap'
+  const isContinuous = tracking === 'continuous'
+
+  const b = new ZPLBuilder({ width: options.widthDots, height: options.heightDots, dpi })
+
+  b.printWidth(options.widthDots)
+  // Give the gap search a full inch of headroom past the label.
+  b.maxLabelLength(options.heightDots + Math.round(dpi * LABEL_LENGTH_SEARCH_MARGIN_INCHES))
+  if (isContinuous) b.labelLength(options.heightDots)
+  b.homePosition(0, 0)
+  b.mediaTracking(tracking, options.markOffset)
+  if (options.persist ?? true) b.saveConfig()
+
+  return b.build()
+}
+
+/**
+ * Build the ZPL that triggers a full media sensor calibration (`~JC`).
+ *
+ * The printer feeds a few labels while measuring gap/mark sensor thresholds and
+ * the actual label length. This is what removes cumulative Y drift after a
+ * media change.
+ *
+ * Send `mediaConfigZpl()` first: calibration needs to know the media type and
+ * the search window before it can learn anything useful.
+ *
+ * `~JC` is an immediate command, so it stands alone rather than living inside a
+ * `^XA`/`^XZ` format block.
+ */
+export function calibrationZpl(): string {
+  return '~JC'
+}
+
 // ─── Convenience Functions ──────────────────────────────────────────────────
+
+/** Options shared by the one-off label helpers */
+interface LabelSizeOptions {
+  /** Label width in dots — emitted as ^PW so output isn't at the mercy of printer state */
+  widthDots?: number;
+  /** Label length in dots — emitted as ^LL */
+  heightDots?: number;
+}
+
+/** Apply ^PW/^LL when the caller told us the label geometry. */
+function applyLabelSize(b: ZPLBuilder, options: LabelSizeOptions): void {
+  if (options.widthDots || options.heightDots) {
+    b.labelSize(options.widthDots, options.heightDots)
+  }
+}
 
 /** Quick one-off text label */
 export function textLabel(
   lines: string[],
-  options: { x?: number; y?: number; lineHeight?: number; height?: number; width?: number; font?: string } = {}
+  options: LabelSizeOptions & { x?: number; y?: number; lineHeight?: number; height?: number; width?: number; font?: string } = {}
 ): string {
   const b = new ZPLBuilder()
+  applyLabelSize(b, options)
   const x = options.x ?? 20
   const startY = options.y ?? 20
   const gap = options.lineHeight ?? 40
@@ -309,9 +466,10 @@ export function barcodeLabel(
   barcodeData: string,
   barcodeType: BarcodeType = 'CODE128',
   labelText?: string,
-  options: { barcodeY?: number; textY?: number; barcodeHeight?: number } = {}
+  options: LabelSizeOptions & { barcodeY?: number; textY?: number; barcodeHeight?: number } = {}
 ): string {
   const b = new ZPLBuilder()
+  applyLabelSize(b, options)
   const bcY = options.barcodeY ?? 50
   const bcH = options.barcodeHeight ?? 100
 
@@ -339,9 +497,10 @@ export function barcodeLabel(
 export function qrLabel(
   data: string,
   labelText?: string,
-  options: { qrY?: number; qrX?: number; textY?: number; magnification?: number } = {}
+  options: LabelSizeOptions & { qrY?: number; qrX?: number; textY?: number; magnification?: number } = {}
 ): string {
   const b = new ZPLBuilder()
+  applyLabelSize(b, options)
 
   b.qrcode(data, {
     x: options.qrX ?? 80,

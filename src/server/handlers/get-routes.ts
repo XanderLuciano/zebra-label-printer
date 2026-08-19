@@ -9,13 +9,16 @@ import { listJobs, getJob, getJobLogs, getJobStats, countPendingJobs } from '../
 import { getAllSettings, getPrinterEvents, getLabelSize, getRecentSizes, setLabelSize, STANDARD_SIZES } from '../../db/settings-repo'
 import { checkForUpdates } from '../../updater'
 import { getSqlite } from '../../db/database'
+import { mediaConfigZpl } from '../../zpl'
 import {
   JOB_STATUSES,
   DEFAULT_DPI,
+  DEFAULT_MEDIA_TRACKING,
   MIN_LABEL_WIDTH_DOTS,
   MIN_LABEL_HEIGHT_DOTS,
   UPDATE_CACHE_MINUTES
 } from '../../constants'
+import type { MediaTracking } from '../../constants'
 import type { PrintQueue } from '../../queue'
 
 /** GET /api/health — server and printer status */
@@ -206,9 +209,14 @@ export function labelSizeGetHandler(apiKey: string): Handler {
   }
 }
 
-/** PUT /api/label-size — set label dimensions */
+/**
+ * PUT /api/label-size — set label dimensions.
+ *
+ * Also pushes the geometry to the connected printer unless
+ * `applyToPrinter: false` is passed.
+ */
 export function labelSizePutHandler(apiKey: string): Handler {
-  return async (req, res, _printer) => {
+  return async (req, res, printer) => {
     if (!checkAuth(req, res, apiKey)) return
 
     const { readBody: rb, parseJson } = await import('../helpers')
@@ -237,7 +245,26 @@ export function labelSizePutHandler(apiKey: string): Handler {
     }
 
     setLabelSize(size)
-    json(res, { success: true, size })
+
+    // Push the new geometry to the printer as well. Saving the setting alone
+    // only changes the ZPL we generate — the printer keeps its own stored print
+    // width and media settings, which is how a size change ends up producing
+    // clipped or drifting labels. Set `applyToPrinter: false` to skip.
+    let printerConfig: { applied: boolean; error?: string } = { applied: false }
+    if (data.applyToPrinter !== false && printer) {
+      const zpl = mediaConfigZpl({
+        widthDots,
+        heightDots,
+        dpi: DEFAULT_DPI,
+        tracking: (data.tracking as MediaTracking) ?? DEFAULT_MEDIA_TRACKING
+      })
+      const result = await printer.print(zpl)
+      printerConfig = result.success
+        ? { applied: true }
+        : { applied: false, error: result.error }
+    }
+
+    json(res, { success: true, size, printerConfig })
   }
 }
 

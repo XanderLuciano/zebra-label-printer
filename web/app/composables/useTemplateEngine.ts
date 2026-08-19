@@ -85,8 +85,53 @@ export interface LabelTemplate {
   updatedAt?: string
 }
 
+/** An axis-aligned rectangle in label dots */
+export interface Box {
+  x: number
+  y: number
+  w: number
+  h: number
+}
+
+/** Options on a print-payload element (the /api/print/label element shape) */
+export interface PrintElementOptions {
+  x?: number
+  y?: number
+  height?: number
+  width?: number
+  ratio?: number
+  magnification?: number
+  /** Barcode symbology, for `barcode` elements */
+  type?: string
+  rotation?: Rotation
+  reverse?: boolean
+  humanReadable?: boolean
+  narrowBarWidth?: number
+  font?: string
+  errorCorrection?: ErrorCorrection
+}
+
+/**
+ * A single element in the /api/print/label payload.
+ *
+ * This is the wire format shared by the print API, `resolveTemplate()` output,
+ * and the read-only LabelPreview component — so previews and prints stay in
+ * step.
+ */
+export interface PrintLabelElement {
+  type: 'text' | 'qrcode' | 'barcode' | 'raw'
+  content?: string
+  /** Raw ZPL, for `raw` elements */
+  zpl?: string
+  options?: PrintElementOptions
+}
+
 /** A concrete element after resolution — carries both the print payload and
- *  absolute geometry so the canvas can render and hit-test it. */
+ *  absolute geometry so the canvas can render and hit-test it.
+ *
+ *  `x/y/w/h` describe the element *unrotated*, which is the coordinate space
+ *  the SVG shapes are drawn in. `transform` rotates that drawing into place and
+ *  `bounds` is the resulting on-label footprint. See `rotationTransform()`. */
 export interface ResolvedElement {
   id: string
   type: ElementType
@@ -97,6 +142,10 @@ export interface ResolvedElement {
   h: number
   text?: string
   rotation: Rotation
+  /** SVG transform that rotates this element to match printed output ('' for 'N') */
+  transform: string
+  /** On-label footprint after rotation — width/height swap on quarter turns */
+  bounds: Box
   reverse?: boolean
   fill?: boolean
   barcodeType?: BarcodeType
@@ -164,10 +213,125 @@ export function usedVariables(tpl: LabelTemplate): string[] {
     const content = (el as TextEl).content
     if (typeof content === 'string') {
       let m: RegExpExecArray | null
-      while ((m = re.exec(content)) !== null) found.add(m[1])
+      while ((m = re.exec(content)) !== null) {
+        if (m[1]) found.add(m[1])
+      }
     }
   }
   return [...found]
+}
+
+// ─── Barcode width estimation ────────────────────────────────────────────────
+
+/** Default ^BY narrow bar width, matching ZPLBuilder's default. */
+const DEFAULT_NARROW_BAR_WIDTH = 2
+
+/**
+ * Module count for a 1D symbology at a given data length.
+ *
+ * A "module" is one narrow-bar width, so printed width is modules × ^BY. The
+ * CODE128 figure is exact and verified against a Labelary render: 8 characters
+ * at ^BY2 measured 246 dots, which is `(11 × (8 + 3) + 2) × 2`. The others are
+ * standard encodings; fixed-length symbologies ignore the data length.
+ */
+function barcodeModules(type: BarcodeType, length: number): number {
+  switch (type) {
+    case 'CODE128':
+      // 11 modules per symbol, plus start, checksum, and stop, plus a 2-module
+      // termination bar.
+      return 11 * (length + 3) + 2
+    case 'CODE39':
+    case 'CODABAR':
+      // 9 bars + 1 inter-character gap per symbol, plus start and stop.
+      return 16 * (length + 2)
+    case 'CODE93':
+      return 9 * (length + 4) + 1
+    // Fixed-length symbologies — data length is irrelevant.
+    case 'EAN13':
+    case 'UPCA':
+      return 95
+    case 'EAN8':
+      return 67
+    case 'UPCE':
+      return 51
+    default:
+      return 11 * (length + 3) + 2
+  }
+}
+
+/** True for symbologies that render as a square 2D matrix rather than bars. */
+export function is2dSymbology(type: BarcodeType): boolean {
+  return type === 'QRCODE' || type === 'DATAMATRIX'
+}
+
+/**
+ * Estimated printed width of a barcode, in dots.
+ *
+ * Used so the preview can show a barcode overrunning the label edge. The old
+ * behaviour was a flat 50% of label width, which ignored the data entirely — and
+ * because a quarter turn swaps width and height, that error showed up as a wrong
+ * *height* on rotated barcodes.
+ */
+export function estimateBarcodeWidth(
+  content: string,
+  type: BarcodeType,
+  narrowBarWidth = DEFAULT_NARROW_BAR_WIDTH,
+): number {
+  return Math.max(1, barcodeModules(type, content.length) * narrowBarWidth)
+}
+
+// ─── Rotation geometry ───────────────────────────────────────────────────────
+//
+// How ZPL positions a rotated field, verified by rendering `^FO200,200` fields
+// at every rotation through Labelary and measuring the ink bounding box:
+//
+//   rotation  ^FO      measured bbox        footprint
+//   N (0°)    200,200  x:200 y:200 101×32   w × h
+//   R (90°)   200,200  x:200 y:200  32×101  h × w
+//   I (180°)  200,200  x:200 y:200 101×32   w × h
+//   B (270°)  200,200  x:200 y:200  32×101  h × w
+//
+// The rule: `^FO` is the top-left corner of the field's *rotated* bounding box,
+// and quarter turns swap width and height. The field never moves off its origin,
+// it only grows in a different direction. That is what these helpers encode, so
+// the on-screen canvas matches the printer instead of drawing everything
+// horizontally and hoping for the best.
+
+/** True for rotations that swap an element's width and height (90° / 270°). */
+export function isQuarterTurn(rotation: Rotation): boolean {
+  return rotation === 'R' || rotation === 'B'
+}
+
+/**
+ * On-label footprint of an element once rotated.
+ * Top-left stays at (x, y); quarter turns swap the dimensions.
+ */
+export function rotatedBounds(box: Box, rotation: Rotation): Box {
+  return isQuarterTurn(rotation)
+    ? { x: box.x, y: box.y, w: box.h, h: box.w }
+    : { ...box }
+}
+
+/**
+ * SVG transform that rotates an element drawn at its unrotated coordinates so
+ * it lands where ZPL would print it.
+ *
+ * Each pivot is chosen so the rotated bounding box keeps its top-left at
+ * (x, y) — the ZPL `^FO` behaviour documented above. Returns '' for 'N' so no
+ * attribute is emitted in the common case.
+ */
+export function rotationTransform(box: Box, rotation: Rotation): string {
+  const { x, y, w, h } = box
+  switch (rotation) {
+    case 'R': // 90° clockwise — text flows downward
+      return `rotate(90 ${x + h / 2} ${y + h / 2})`
+    case 'I': // 180° — spin about the centre
+      return `rotate(180 ${x + w / 2} ${y + h / 2})`
+    case 'B': // 270° clockwise — text reads bottom-up
+      return `rotate(-90 ${x + w / 2} ${y + w / 2})`
+    default:
+      return ''
+  }
 }
 
 /** Effective element after applying the override for a given size. */
@@ -211,28 +375,36 @@ export function resolveTemplate(
       const ratio = el.ratio ?? 0.6
       const charW = Math.round(height * ratio)
       const estWidth = Math.max(charW, text.length * charW)
-      // Anchor alignment: xAbs is the anchor point.
-      let x = xAbs
-      if (el.align === 'center') x = Math.round(xAbs - estWidth / 2)
-      else if (el.align === 'right') x = xAbs - estWidth
-      x = Math.max(0, x)
+
+      // Anchor alignment shifts the field along the axis the text runs on.
+      // Rotated text flows down the label, not across it, so a centred 90°
+      // label has to move on Y — shifting X would slide it sideways instead.
+      let shift = 0
+      if (el.align === 'center') shift = -Math.round(estWidth / 2)
+      else if (el.align === 'right') shift = -estWidth
+
+      const quarter = isQuarterTurn(rotation)
+      const x = quarter ? xAbs : Math.max(0, xAbs + shift)
+      const y = quarter ? Math.max(0, yAbs + shift) : yAbs
 
       out.push({
         id: el.id,
         type: 'text',
         x,
-        y: yAbs,
+        y,
         w: estWidth,
         h: height,
         text,
         rotation,
+        transform: rotationTransform({ x, y, w: estWidth, h: height }, rotation),
+        bounds: rotatedBounds({ x, y, w: estWidth, h: height }, rotation),
         reverse: el.reverse,
         payload: {
           type: 'text',
           content: text,
           options: {
             x,
-            y: yAbs,
+            y,
             height,
             ratio,
             ...(el.font ? { font: el.font } : {}),
@@ -244,15 +416,21 @@ export function resolveTemplate(
     } else if (el.type === 'barcode') {
       const content = substitute(el.content, values, tpl.variables)
       const height = Math.max(1, Math.round((el.heightPct / 100) * H))
+      // 2D symbologies are square; 1D width comes from the encoded data.
+      const width = is2dSymbology(el.barcodeType)
+        ? height
+        : estimateBarcodeWidth(content, el.barcodeType, el.narrowBarWidth)
       out.push({
         id: el.id,
         type: 'barcode',
         x: xAbs,
         y: yAbs,
-        w: Math.round(W * 0.5),
+        w: width,
         h: height,
         text: content,
         rotation,
+        transform: rotationTransform({ x: xAbs, y: yAbs, w: width, h: height }, rotation),
+        bounds: rotatedBounds({ x: xAbs, y: yAbs, w: width, h: height }, rotation),
         barcodeType: el.barcodeType,
         payload: {
           type: 'barcode',
@@ -271,7 +449,14 @@ export function resolveTemplate(
     } else if (el.type === 'qrcode') {
       const content = substitute(el.content, values, tpl.variables)
       const mag = el.magnification ?? 5
-      const size = mag * 21 // approximate module count for preview
+      // 21 modules is the version-1 QR grid; larger payloads step up to 25, 29,
+      // ... so this is a floor, not an exact size.
+      //
+      // Known approximation: ^BQ offsets the symbol from the field origin by
+      // about 2 modules, in a direction that follows the rotation (down for 'N',
+      // right for 'B', none for 'R'/'I'). At 203 DPI that is ~0.05", so the
+      // preview ignores it rather than modelling a printer quirk.
+      const size = mag * 21
       out.push({
         id: el.id,
         type: 'qrcode',
@@ -281,6 +466,10 @@ export function resolveTemplate(
         h: size,
         text: content,
         rotation,
+        // A QR code is square, so rotation doesn't move it — but the modules do
+        // turn, and the printer needs telling. This used to be dropped.
+        transform: rotationTransform({ x: xAbs, y: yAbs, w: size, h: size }, rotation),
+        bounds: rotatedBounds({ x: xAbs, y: yAbs, w: size, h: size }, rotation),
         payload: {
           type: 'qrcode',
           content,
@@ -289,6 +478,7 @@ export function resolveTemplate(
             y: yAbs,
             magnification: mag,
             ...(el.errorCorrection ? { errorCorrection: el.errorCorrection } : {}),
+            ...(rotation !== 'N' ? { rotation } : {}),
           },
         },
       })
@@ -297,6 +487,12 @@ export function resolveTemplate(
       const h = Math.max(1, Math.round((el.heightPct / 100) * H))
       const rounding = el.rounding ?? 0
       const thickness = el.fill ? Math.min(w, h) : Math.max(1, el.thickness)
+      // ^GB has no rotation parameter, but a rectangle rotated a quarter turn is
+      // just the same rectangle with its dimensions swapped — so bake the
+      // rotation into the box dimensions rather than dropping it.
+      const quarter = isQuarterTurn(rotation)
+      const zplW = quarter ? h : w
+      const zplH = quarter ? w : h
       out.push({
         id: el.id,
         type: 'box',
@@ -305,10 +501,12 @@ export function resolveTemplate(
         w,
         h,
         rotation,
+        transform: rotationTransform({ x: xAbs, y: yAbs, w, h }, rotation),
+        bounds: rotatedBounds({ x: xAbs, y: yAbs, w, h }, rotation),
         fill: el.fill,
         payload: {
           type: 'raw',
-          zpl: `^FO${xAbs},${yAbs}^GB${w},${h},${thickness},B,${rounding}^FS`,
+          zpl: `^FO${xAbs},${yAbs}^GB${zplW},${zplH},${thickness},B,${rounding}^FS`,
         },
       })
     }
