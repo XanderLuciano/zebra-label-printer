@@ -9,6 +9,12 @@
  * on-screen canvas renders exactly what will be printed.
  */
 
+import {
+  measureZplText,
+  DESIGNER_DEFAULT_RATIO,
+  type ZplTextMetrics,
+} from './useZplFonts'
+
 // ─── Types (mirror src/schemas.ts template schemas) ─────────────────────────
 
 export type Rotation = 'N' | 'R' | 'I' | 'B'
@@ -119,8 +125,12 @@ export interface PrintElementOptions {
  * This is the wire format shared by the print API, `resolveTemplate()` output,
  * and the read-only LabelPreview component — so previews and prints stay in
  * step.
+ *
+ * Declared as a type alias, not an interface, on purpose: only type aliases get
+ * an implicit index signature, which is what lets a resolved payload be passed
+ * straight to the `Record<string, unknown>[]` print endpoints without a cast.
  */
-export interface PrintLabelElement {
+export type PrintLabelElement = {
   type: 'text' | 'qrcode' | 'barcode' | 'raw'
   content?: string
   /** Raw ZPL, for `raw` elements */
@@ -137,7 +147,7 @@ export interface PrintLabelElement {
 export interface ResolvedElement {
   id: string
   type: ElementType
-  payload: Record<string, unknown>
+  payload: PrintLabelElement
   x: number
   y: number
   w: number
@@ -151,6 +161,17 @@ export interface ResolvedElement {
   reverse?: boolean
   fill?: boolean
   barcodeType?: BarcodeType
+  /**
+   * Printer text metrics, for `text` elements only.
+   *
+   * Carries the cap height, baseline and per-font advance width the canvas needs
+   * to draw the string the way `^A` sets it. Without this the preview has to
+   * guess, and a guess based on character count is wrong by 3× between `iiii`
+   * and `WWWW` in the proportional default font.
+   */
+  textMetrics?: ZplTextMetrics
+  /** The `^A` font designator this element prints with. */
+  font?: string
 }
 
 export interface LabelSizeOption {
@@ -179,7 +200,13 @@ export const BARCODE_TYPES: BarcodeType[] = [
   'UPCA', 'UPCE', 'CODABAR', 'PDF417', 'QRCODE', 'DATAMATRIX',
 ]
 
-export const ZPL_FONTS = ['0', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H']
+/**
+ * Selectable `^A` fonts.
+ *
+ * Re-exported from useZplFonts, which owns the per-font metrics, so there is one
+ * list to keep in step instead of two.
+ */
+export { ZPL_FONT_IDS as ZPL_FONTS } from './useZplFonts'
 
 // ─── Helpers ─────────────────────────────────────────────────────────────────
 
@@ -193,16 +220,33 @@ export function newId(prefix = 'el'): string {
   return `${prefix}_${Date.now().toString(36)}_${idCounter}`
 }
 
+export interface SubstituteOptions {
+  /**
+   * Whether a blank value falls back to the variable's sample.
+   *
+   * The designer wants this on, so an unfilled template still previews as a
+   * plausible label. Anything that actually prints wants it off: quietly putting
+   * the sample part number on a real label is worse than leaving a gap, because
+   * the label looks correct and isn't. Defaults to on to preserve the designer's
+   * behaviour.
+   */
+  useSamples?: boolean
+}
+
 /** Substitute `{{var}}` tokens using provided values, falling back to samples. */
 export function substitute(
   input: string,
   values: Record<string, string>,
-  variables: TemplateVariable[]
+  variables: TemplateVariable[],
+  options: SubstituteOptions = {}
 ): string {
+  const useSamples = options.useSamples ?? true
   return input.replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, (_m, key: string) => {
     if (values[key] !== undefined && values[key] !== '') return values[key]
-    const v = variables.find(x => x.name === key)
-    if (v && v.sample) return v.sample
+    if (useSamples) {
+      const v = variables.find(x => x.name === key)
+      if (v && v.sample) return v.sample
+    }
     return values[key] ?? ''
   })
 }
@@ -357,7 +401,8 @@ export function effectiveElement(
 export function resolveTemplate(
   tpl: LabelTemplate,
   values: Record<string, string>,
-  target: { widthDots: number; heightDots: number }
+  target: { widthDots: number; heightDots: number },
+  options: SubstituteOptions = {}
 ): ResolvedElement[] {
   const W = target.widthDots
   const H = target.heightDots
@@ -372,18 +417,39 @@ export function resolveTemplate(
     const rotation: Rotation = el.rotation ?? 'N'
 
     if (el.type === 'text') {
-      const text = substitute(el.content, values, tpl.variables)
+      const text = substitute(el.content, values, tpl.variables, options)
       const height = Math.max(1, Math.round((el.fontHeightPct / 100) * H))
-      const ratio = el.ratio ?? 0.6
-      const charW = Math.round(height * ratio)
-      const estWidth = Math.max(charW, text.length * charW)
+      const ratio = el.ratio ?? DESIGNER_DEFAULT_RATIO
+      // The width the printer will derive: ZPLBuilder.text() computes
+      // `round(height × ratio)` when the payload carries height and ratio but no
+      // explicit width, which is exactly what the payload below sends.
+      const charWidth = Math.max(1, Math.round(height * ratio))
+      const metrics = measureZplText(text, { font: el.font, height, width: charWidth })
+
+      // Real advance width from the font's own metrics, not character count ×
+      // nominal cell. For font 0 this is the difference between a box that hugs
+      // the text and one that is wildly too wide or too narrow depending on
+      // which letters were typed.
+      const fieldWidth = Math.max(1, Math.round(metrics.width))
+
+      // The box is the *character cell* ZPL reserves, not the ink inside it.
+      // That distinction matters for rotation: measuring `^FO200,200 ^A0R,40,40`
+      // puts the cap ink 10 dots right of the origin, and 10 is exactly the cell
+      // height minus the cap height. The cell is what pins to ^FO, so rotating
+      // the cell — and drawing the ink at its measured offset within it — lands
+      // text correctly at all four rotations. Using the ink box here shifts
+      // rotated text sideways.
+      //
+      // Note this is the font's real cell, which for a bitmap font is its base
+      // cell times the magnification and so need not equal `height`.
+      const fieldHeight = Math.max(1, Math.round(metrics.cellHeight))
 
       // Anchor alignment shifts the field along the axis the text runs on.
       // Rotated text flows down the label, not across it, so a centred 90°
       // label has to move on Y — shifting X would slide it sideways instead.
       let shift = 0
-      if (el.align === 'center') shift = -Math.round(estWidth / 2)
-      else if (el.align === 'right') shift = -estWidth
+      if (el.align === 'center') shift = -Math.round(fieldWidth / 2)
+      else if (el.align === 'right') shift = -fieldWidth
 
       const quarter = isQuarterTurn(rotation)
       const x = quarter ? xAbs : Math.max(0, xAbs + shift)
@@ -394,13 +460,15 @@ export function resolveTemplate(
         type: 'text',
         x,
         y,
-        w: estWidth,
-        h: height,
+        w: fieldWidth,
+        h: fieldHeight,
         text,
         rotation,
-        transform: rotationTransform({ x, y, w: estWidth, h: height }, rotation),
-        bounds: rotatedBounds({ x, y, w: estWidth, h: height }, rotation),
+        transform: rotationTransform({ x, y, w: fieldWidth, h: fieldHeight }, rotation),
+        bounds: rotatedBounds({ x, y, w: fieldWidth, h: fieldHeight }, rotation),
         reverse: el.reverse,
+        textMetrics: metrics,
+        font: el.font,
         payload: {
           type: 'text',
           content: text,
@@ -416,7 +484,7 @@ export function resolveTemplate(
         },
       })
     } else if (el.type === 'barcode') {
-      const content = substitute(el.content, values, tpl.variables)
+      const content = substitute(el.content, values, tpl.variables, options)
       const height = Math.max(1, Math.round((el.heightPct / 100) * H))
       // 2D symbologies are square; 1D width comes from the encoded data.
       const width = is2dSymbology(el.barcodeType)
@@ -449,7 +517,7 @@ export function resolveTemplate(
         },
       })
     } else if (el.type === 'qrcode') {
-      const content = substitute(el.content, values, tpl.variables)
+      const content = substitute(el.content, values, tpl.variables, options)
       const mag = el.magnification ?? 5
       // 21 modules is the version-1 QR grid; larger payloads step up to 25, 29,
       // ... so this is a floor, not an exact size.
@@ -518,7 +586,7 @@ export function resolveTemplate(
 }
 
 /** Just the print payloads (drops canvas metadata). */
-export function toPrintElements(resolved: ResolvedElement[]): Array<Record<string, unknown>> {
+export function toPrintElements(resolved: ResolvedElement[]): PrintLabelElement[] {
   return resolved.map(r => r.payload)
 }
 

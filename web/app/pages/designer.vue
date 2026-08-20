@@ -12,9 +12,12 @@ import type {
   BarcodeType, Rotation, ErrorCorrection, TextAlign,
 } from '../composables/useTemplateEngine'
 import {
-  emptyTemplate, newElement, resolveTemplate, toPrintElements, sizeKey,
-  SIZE_PRESETS, BARCODE_TYPES, ZPL_FONTS, DPI,
+  emptyTemplate, newElement, resolveTemplate, toPrintElements, sizeKey, substitute,
+  SIZE_PRESETS, BARCODE_TYPES, DPI,
 } from '../composables/useTemplateEngine'
+import {
+  ZPL_FONT_IDS, zplFont, measureZplText, DESIGNER_DEFAULT_RATIO,
+} from '../composables/useZplFonts'
 
 const api = useApi()
 const toast = useToast()
@@ -67,6 +70,39 @@ const selectedEl = computed<TemplateElement | null>(() => {
 const resolved = computed(() =>
   resolveTemplate(template.value, values, { widthDots: targetW.value, heightDots: targetH.value })
 )
+
+/**
+ * What the selected text element's font and size actually come out as.
+ *
+ * Two things are otherwise invisible. Bitmap fonts A–H only render at whole
+ * multiples of their character cell, so a font height of 14% can quietly snap to
+ * something noticeably different — the number input says one thing and the
+ * printer does another. And now that text width is measured properly, it's worth
+ * saying when a string runs off the edge of the label.
+ */
+const selectedFontInfo = computed(() => {
+  const el = selectedEl.value
+  if (!el || el.type !== 'text') return null
+
+  const requestedHeight = Math.max(1, Math.round((el.fontHeightPct / 100) * targetH.value))
+  const requestedWidth = Math.max(1, Math.round(requestedHeight * (el.ratio ?? DESIGNER_DEFAULT_RATIO)))
+  const metrics = measureZplText(
+    substitute(el.content, values, template.value.variables),
+    { font: el.font, height: requestedHeight, width: requestedWidth },
+  )
+  const drawn = resolved.value.find(r => r.id === el.id)
+
+  return {
+    spec: zplFont(el.font),
+    requestedHeight,
+    requestedWidth,
+    metrics,
+    /** True when the run extends past the right or bottom label edge. */
+    overflows: drawn
+      ? drawn.bounds.x + drawn.bounds.w > targetW.value || drawn.bounds.y + drawn.bounds.h > targetH.value
+      : false,
+  }
+})
 
 // ─── Variable value syncing ─────────────────────────────────────────────────
 watch(() => template.value.variables.map(v => v.name), () => {
@@ -209,7 +245,7 @@ const sizeItems = SIZE_PRESETS.map(s => ({
   label: `${s.name} (${s.widthDots}×${s.heightDots})`,
   value: sizeKey(s.widthDots, s.heightDots),
 }))
-const fontItems = ZPL_FONTS.map(v => ({ label: `Font ${v}`, value: v }))
+const fontItems = ZPL_FONT_IDS.map(v => ({ label: zplFont(v).label, value: v as string }))
 const barcodeItems = BARCODE_TYPES.map(v => ({ label: v, value: v }))
 // Annotated rather than inferred: without the value type these arrays infer
 // `value: string`, which widens the bound USelect and silently allows an invalid
@@ -357,7 +393,10 @@ async function fetchAccurate() {
     const hIn = (targetH.value / DPI).toFixed(2)
     const resp = await fetch(`https://api.labelary.com/v1/printers/8dpmm/labels/${wIn}x${hIn}/0/`, {
       method: 'POST',
-      headers: { Accept: 'image/png' },
+      // Labelary only accepts form-encoded or multipart bodies. Without an
+      // explicit Content-Type the browser sends text/plain for a string body and
+      // every request comes back 415, which is why this preview never rendered.
+      headers: { Accept: 'image/png', 'Content-Type': 'application/x-www-form-urlencoded' },
       body: zpl,
     })
     if (!resp.ok) {
@@ -643,7 +682,7 @@ onMounted(() => {
                 <UFormField label="Font height (%)">
                   <UInput v-model="f.fontHeightPct" type="number" size="sm" step="0.5" />
                 </UFormField>
-                <UFormField label="Aspect ratio">
+                <UFormField label="Aspect ratio" help="Character width ÷ height">
                   <UInput v-model="f.ratio" type="number" size="sm" step="0.05" />
                 </UFormField>
               </div>
@@ -655,6 +694,36 @@ onMounted(() => {
                   <USelect v-model="f.align" :items="alignItems" size="sm" />
                 </UFormField>
               </div>
+
+              <!-- What the font and size actually resolve to on the printer -->
+              <div v-if="selectedFontInfo" class="text-xs text-gray-500 space-y-1">
+                <p>{{ selectedFontInfo.spec.description }}</p>
+                <p>
+                  Capitals
+                  <span class="font-medium">{{ Math.round(selectedFontInfo.metrics.capHeight) }}</span> dots tall ·
+                  text
+                  <span class="font-medium">{{ Math.round(selectedFontInfo.metrics.width) }}</span> of
+                  {{ targetW }} dots wide
+                </p>
+                <p v-if="selectedFontInfo.spec.kind === 'bitmap'">
+                  Bitmap font — renders at
+                  {{ selectedFontInfo.metrics.heightMagnification }}× ×
+                  {{ selectedFontInfo.metrics.widthMagnification }}× of its
+                  {{ selectedFontInfo.spec.cellHeight }}×{{ selectedFontInfo.spec.cellWidth }} cell, so
+                  sizes snap — asking for {{ selectedFontInfo.requestedHeight }} dots gives
+                  {{ selectedFontInfo.metrics.cellHeight }}.
+                </p>
+                <p v-if="selectedFontInfo.spec.charset === 'ocr-a'" class="text-warning">
+                  OCR-A has no lowercase — those characters print as blanks.
+                </p>
+                <p v-else-if="selectedFontInfo.spec.charset === 'upper'" class="text-warning">
+                  Uppercase-only font — lowercase is folded up.
+                </p>
+                <p v-if="selectedFontInfo.overflows" class="text-error">
+                  This text runs past the edge of the label.
+                </p>
+              </div>
+
               <UCheckbox v-model="f.reverse" label="Reverse (white on black)" />
             </template>
 

@@ -43,6 +43,8 @@ src/
     database.ts         → getDb() singleton, WAL mode, auto-migrations
     print-job-repo.ts   → CRUD for print_jobs and job_logs tables
     settings-repo.ts    → Key/value settings store + printer events
+    template-repo.ts    → CRUD for label_templates (JSON blob + mirrored columns)
+    template-seed.ts    → Built-in example templates + one-time idempotent seeding
   queue.ts              → PrintQueue: persistent job queue with background processor
   webhook.ts            → Thin re-export + standalone entry point
   server/               → Modular HTTP server (split from webhook.ts)
@@ -64,6 +66,7 @@ web/                    → Nuxt 4 Web UI (separate package)
     pages/
       index.vue         → Dashboard: status cards, quick print, system info
       part-label.vue    → Part/bag label form
+      print.vue         → Print from a saved template: pick one, fill its variables, print
       designer.vue      → Template designer: canvas, per-size overrides, Labelary preview
       history.vue       → Print history: filterable job table + per-job label previews
       queue.vue         → Queue: job list + detail panel + event log
@@ -75,6 +78,7 @@ web/                    → Nuxt 4 Web UI (separate package)
     composables/
       useApi.ts         → API client wrapping $fetch with typed methods
       useTemplateEngine.ts → Template model, resolveTemplate(), ZPL rotation geometry
+      useZplFonts.ts       → Measured ZPL font metrics (advance widths, cap heights, magnification)
       useLocalPrinter.ts   → WebUSB connection to a directly attached Zebra printer
       usePrintTarget.ts    → server-vs-local preference + unified print/config dispatch
     types/
@@ -225,6 +229,30 @@ automatically.
   looking for gaps.
 - `~JC` (`calibrationZpl()`) runs a sensor calibration and feeds 2–4 labels. Always
   send the media config first so calibration knows the media type and search window.
+
+### Fonts and text metrics
+
+`web/app/composables/useZplFonts.ts` holds measured metrics for the built-in `^A`
+fonts, so the designer canvas sizes and spaces text the way the printer does.
+Font `0` is CG Triumvirate Bold Condensed and *proportional* — `iiii` and `WWWW`
+are not the same width — while `A`–`H` are fixed-width bitmaps that only render at
+whole magnifications of their cell, so requested sizes snap. `^FO` anchors the
+character **cell**, not the ink, which is what makes rotation land correctly.
+
+The preview faces in `web/public/fonts` are metric-matched substitutes; the
+printer's own fonts are licensed firmware typefaces that can't be shipped. See
+that folder's README for the licences and why.
+
+### `^BY` and barcode module width
+
+Module width is printer **state**, and `^BQ` leaves its QR magnification behind in
+it. A QR followed by a 1D barcode therefore used to stretch the barcode (a
+magnification-8 QR turned a 422-dot CODE128 into 1688 dots, clipped off the
+label). `ZPLBuilder.barcode()` now emits `^BY{narrow},{ratio}` per barcode, which
+also makes `narrowBarWidth` take effect at all — it was previously appended to the
+barcode command, where `^BC` reads that slot as "print interpretation line above".
+Note `^B3` (CODE39) and `^BK` (CODABAR) take a check-digit flag *before* the
+height, unlike the others.
 
 ### ZPL rotation geometry
 

@@ -39,7 +39,7 @@ describe('ZPLBuilder', () => {
 
     expect(zpl).toContain('^FO20,20^ADN,40')
     expect(zpl).toContain('^FDTitle^FS')
-    expect(zpl).toContain('^BCN,60,Y,2,,,N^FD12345^FS')
+    expect(zpl).toContain('^BY2,2^FO20,80^BCN,60,Y,N^FD12345^FS')
     expect(zpl).toContain('^BQN,2,4')
     expect(zpl).toContain('^GB580,2,2,B^FS')
   })
@@ -90,6 +90,49 @@ describe('ZPLBuilder', () => {
 
   it('defaults QR code rotation to normal', () => {
     expect(new ZPLBuilder().qrcode('DATA', { x: 10, y: 10 }).build()).toContain('^BQN,2,')
+  })
+
+  it('sets the module width with ^BY so narrowBarWidth actually applies', () => {
+    // It used to be appended to the barcode command, where ^BC reads the 4th
+    // parameter as "print interpretation line above" — so it was ignored and the
+    // printed width never matched what the preview estimated.
+    const zpl = new ZPLBuilder()
+      .barcode('12345678', { x: 10, y: 10, type: 'CODE128', height: 60, narrowBarWidth: 4 })
+      .build()
+    expect(zpl).toContain('^BY4,2')
+    expect(zpl).toContain('^BCN,60,Y,N')
+    expect(zpl).not.toContain('^BCN,60,Y,4')
+  })
+
+  it('pins the module width even after a QR code', () => {
+    // ^BQ leaves its magnification behind as the printer's module width, which
+    // stretched any following barcode. Measured on Labelary: a magnification-8 QR
+    // turned a 422-dot CODE128 into 1688 dots, clipped off the label edge.
+    const zpl = new ZPLBuilder()
+      .qrcode('DATA', { x: 10, y: 10, magnification: 8 })
+      .barcode('12345678', { x: 10, y: 200, type: 'CODE128', height: 60 })
+      .build()
+    const byIndex = zpl.indexOf('^BY2,2')
+    const bcIndex = zpl.indexOf('^BC')
+    expect(byIndex).toBeGreaterThan(-1)
+    expect(byIndex).toBeLessThan(bcIndex)
+  })
+
+  it('puts the height in the right slot for CODE39 and CODABAR', () => {
+    // ^B3 is `o,e,h,f,g` — height is third, not second like ^BC. Emitting it
+    // second silently dropped it and the bars came out at the printer default.
+    expect(new ZPLBuilder().barcode('ABC', { x: 0, y: 0, type: 'CODE39', height: 77 }).build())
+      .toContain('^B3N,N,77,Y,N')
+    expect(new ZPLBuilder().barcode('A123A', { x: 0, y: 0, type: 'CODABAR', height: 77 }).build())
+      .toContain('^BKN,N,77,Y,N')
+    // ^BA (CODE93) does take height second.
+    expect(new ZPLBuilder().barcode('ABC', { x: 0, y: 0, type: 'CODE93', height: 77 }).build())
+      .toContain('^BAN,77,Y,N')
+  })
+
+  it('honours humanReadable: false', () => {
+    expect(new ZPLBuilder().barcode('123', { x: 0, y: 0, type: 'CODE128', humanReadable: false }).build())
+      .toContain('^BCN,50,N,N')
   })
 
   it('supports rotation on QR codes routed through barcode()', () => {

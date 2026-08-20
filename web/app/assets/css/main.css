@@ -1,6 +1,74 @@
 @import "tailwindcss";
 @import "@nuxt/ui";
 
+/*
+ * Preview faces for the ZPL built-in fonts.
+ *
+ * The label previews are SVG, so these are declared as classes and applied to
+ * each <text> rather than set inline. Which ZPL font maps to which face — and the
+ * cap-height ratios each face needs — lives in useZplFonts.ts. Swapping a file
+ * here means re-measuring those ratios, or capitals come out the wrong height.
+ *
+ * These are metric-matched substitutes, not the printer's own fonts, which are
+ * licensed firmware typefaces that cannot be shipped in a web app. See
+ * public/fonts/README.md for why, and for each file's licence and notices.
+ *
+ * Self-hosted from public/fonts rather than pulled from Google Fonts: these are
+ * modified builds that no CDN serves, and it keeps the previews working offline.
+ */
+@font-face {
+  font-family: 'PrintLab ZPL';
+  src: url('/fonts/PrintLabZPL-Bold.woff2') format('woff2');
+  font-weight: 700;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'PrintLab Mono';
+  src: url('/fonts/PrintLabMono.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'OCR A';
+  src: url('/fonts/OCRA.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+@font-face {
+  font-family: 'OCR B';
+  src: url('/fonts/OCRB.ttf') format('truetype');
+  font-weight: 400;
+  font-style: normal;
+  font-display: block;
+}
+
+/* Scalable font 0 — CG Triumvirate Bold Condensed on the printer. */
+.zpl-face-scalable {
+  font-family: 'PrintLab ZPL', 'Arial Narrow', Helvetica, Arial, sans-serif;
+  font-weight: 700;
+}
+
+/* Fixed-width device fonts A, B, C, D, F, G. */
+.zpl-face-bitmap {
+  font-family: 'PrintLab Mono', ui-monospace, 'Courier New', monospace;
+}
+
+/* Font H. */
+.zpl-face-ocr-a {
+  font-family: 'OCR A', 'PrintLab Mono', ui-monospace, monospace;
+}
+
+/* Font E. */
+.zpl-face-ocr-b {
+  font-family: 'OCR B', 'PrintLab Mono', ui-monospace, monospace;
+}
+
 @theme static {
   --font-sans: 'Public Sans', sans-serif;
 

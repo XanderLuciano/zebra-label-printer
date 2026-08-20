@@ -12,6 +12,12 @@
  */
 import type { Rotation, PrintLabelElement, BarcodeType } from '../composables/useTemplateEngine';
 import { rotationTransform, estimateBarcodeWidth, is2dSymbology } from '../composables/useTemplateEngine';
+import {
+  measureZplText,
+  resolveFontSize,
+  zplTextRender,
+  type ZplTextRender,
+} from '../composables/useZplFonts';
 
 /** A drawable element: unrotated geometry plus the transform that places it. */
 interface DrawnElement {
@@ -25,6 +31,8 @@ interface DrawnElement {
   text: string;
   reverse: boolean;
   showText: boolean;
+  /** SVG text attributes derived from the element's ZPL font. Text only. */
+  render?: ZplTextRender;
 }
 
 const props = withDefaults(defineProps<{
@@ -68,9 +76,17 @@ const drawn = computed<DrawnElement[]>(() => {
     const content = el.content ?? '';
 
     if (el.type === 'text' && content) {
-      const h = o.height ?? 20;
-      const charW = o.width ?? Math.round(h * (o.ratio ?? 0.8));
-      const w = Math.max(charW, content.length * charW);
+      // Resolve the ^A parameters exactly as ZPLBuilder.text() would, then ask
+      // the font for its real metrics. History entries are raw print payloads,
+      // so the height/width/ratio defaulting has to match the builder's or a
+      // reprinted label won't look like its own preview.
+      const size = resolveFontSize({ height: o.height, width: o.width, ratio: o.ratio });
+      const metrics = measureZplText(content, { font: o.font, height: size.height, width: size.width });
+      const w = Math.max(1, Math.round(metrics.width));
+      // The character cell, not the ink: it is what ^FO anchors, so rotating it
+      // is what puts rotated text in the right place. Same reasoning as
+      // resolveTemplate().
+      const h = Math.max(1, Math.round(metrics.cellHeight));
       out.push({
         key: i,
         kind: 'text',
@@ -79,9 +95,10 @@ const drawn = computed<DrawnElement[]>(() => {
         w,
         h,
         transform: rotationTransform({ x, y, w, h }, rotation) || undefined,
-        text: content,
+        text: metrics.printable,
         reverse: !!o.reverse,
         showText: false,
+        render: zplTextRender(metrics, o.font, y),
       });
     } else if (el.type === 'qrcode' && content) {
       const size = (o.magnification ?? 5) * 21;
@@ -153,15 +170,27 @@ function barX(el: DrawnElement, j: number): number {
     <rect x="0" y="0" :width="widthDots" :height="heightDots" fill="white" />
 
     <g v-for="el in drawn" :key="el.key" :transform="el.transform">
-      <!-- Text -->
-      <text
-        v-if="el.kind === 'text'"
-        :x="el.x"
-        :y="el.y + el.h * 0.82"
-        :font-size="el.h"
-        font-family="monospace"
-        :fill="el.reverse ? 'white' : 'black'"
-      >{{ el.text }}</text>
+      <!-- Text, sized and spaced from the element's own ZPL font metrics -->
+      <template v-if="el.kind === 'text' && el.render">
+        <rect
+          v-if="el.reverse"
+          :x="el.x"
+          :y="el.y"
+          :width="el.w"
+          :height="el.h"
+          fill="black"
+        />
+        <text
+          :x="el.x"
+          :y="el.render.baselineY"
+          :font-size="el.render.fontSize"
+          :class="el.render.faceClass"
+          :textLength="el.render.textLength"
+          lengthAdjust="spacingAndGlyphs"
+          :fill="el.reverse ? 'white' : 'black'"
+          xml:space="preserve"
+        >{{ el.render.content }}</text>
+      </template>
 
       <!-- QR code placeholder -->
       <template v-else-if="el.kind === 'qrcode'">

@@ -74,6 +74,38 @@ export const FONTS = {
   ZERO: { height: 24, width: 15 }
 } as const
 
+/** `^BY` module width the printer defaults to, and what previews assume. */
+const DEFAULT_NARROW_BAR_WIDTH = 2
+
+/**
+ * Symbologies whose command takes a check-digit flag *before* the height.
+ *
+ * `^B3` (CODE39) is `o,e,h,f,g` and `^BK` (CODABAR) is `o,e,h,f,g,k,l`, while
+ * every other supported symbology puts height second. Passing height in the wrong
+ * slot loses it silently — the bars come out at the printer's default height.
+ */
+const CHECK_DIGIT_BEFORE_HEIGHT: ReadonlySet<BarcodeType> = new Set(['CODE39', 'CODABAR'])
+
+/**
+ * Orientation / height / interpretation-line parameters for a 1D barcode command.
+ *
+ * Only the leading parameters that are common across the supported symbologies
+ * are emitted; the rest are left at their defaults rather than guessed at, since
+ * their meaning differs per command.
+ */
+function barcodeGeometryParams(
+  type: BarcodeType,
+  orientation: string,
+  height: number,
+  interpretationLine: boolean
+): string {
+  const line = interpretationLine ? 'Y' : 'N'
+  return CHECK_DIGIT_BEFORE_HEIGHT.has(type)
+    // e = N: no mod-43/check digit, matching the previous behaviour.
+    ? `${orientation},N,${height},${line},N`
+    : `${orientation},${height},${line},N`
+}
+
 /** Barcode type → ZPL command mapping */
 const BARCODE_COMMANDS: Record<BarcodeType, string> = {
   CODE128: 'BC',
@@ -258,10 +290,24 @@ export class ZPLBuilder {
       const h = options.height ?? 50
       const hr = options.humanReadable ?? true
       const hrPos = options.humanReadablePosition ?? (hr ? 'Y' : 'N')
-      const narrow = options.narrowBarWidth ?? 2
+      const narrow = options.narrowBarWidth ?? DEFAULT_NARROW_BAR_WIDTH
       const ratio = options.wideBarRatio ?? 2.0
 
-      field += `^${cmd}${orientation},${h},${hrPos === 'Y' ? 'Y' : 'N'},${narrow},,,${ratio === 3.0 ? 'Y' : 'N'}`
+      // Module width and wide-bar ratio belong in ^BY, not in the barcode
+      // command's parameter list. They used to be appended to it, where they
+      // landed in slots that mean other things — ^BC's 4th parameter is "print
+      // interpretation line above" — so `narrowBarWidth` was silently ignored and
+      // every barcode printed at whatever module width the printer happened to
+      // be holding.
+      //
+      // That state is the real hazard: `^BQ` leaves its QR magnification behind
+      // as the module width. Measured on Labelary, a QR at magnification 8
+      // followed by a 16-character CODE128 stretched it from 422 dots to 1688 and
+      // clipped it off the label. Emitting ^BY per barcode makes the width
+      // deterministic and finally makes `narrowBarWidth` do something, which also
+      // brings printed width in line with `estimateBarcodeWidth()` in the preview.
+      field = `^BY${narrow},${ratio}` + field
+      field += `^${cmd}${barcodeGeometryParams(options.type, orientation, h, hrPos === 'Y')}`
       field += `^FD${this.escapeFieldData(content)}^FS`
     }
 

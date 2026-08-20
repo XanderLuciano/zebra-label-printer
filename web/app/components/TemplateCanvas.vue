@@ -7,8 +7,9 @@
  * percentage coordinates so the parent can write to the base template or a
  * per-size override.
  */
-import type { LabelTemplate, Rotation } from '../composables/useTemplateEngine'
+import type { LabelTemplate, Rotation, ResolvedElement } from '../composables/useTemplateEngine'
 import { resolveTemplate, effectiveElement } from '../composables/useTemplateEngine'
+import { zplTextRender, type ZplTextRender } from '../composables/useZplFonts'
 
 /** Degree labels for the rotation marker on the selected element */
 const rotationLabels: Record<Rotation, string> = { N: '0°', R: '90°', I: '180°', B: '270°' }
@@ -34,8 +35,21 @@ const emit = defineEmits<{
 
 const svgRef = ref<SVGSVGElement | null>(null)
 
-const resolved = computed(() =>
+/**
+ * A resolved element plus, for text, the SVG attributes that reproduce its ZPL
+ * font on screen.
+ *
+ * Computed once per element here rather than called from the template, so the
+ * six attributes each `<text>` needs don't each trigger their own measurement
+ * pass on every re-render.
+ */
+type DrawableElement = ResolvedElement & { render?: ZplTextRender }
+
+const resolved = computed<DrawableElement[]>(() =>
   resolveTemplate(props.template, props.values, { widthDots: props.widthDots, heightDots: props.heightDots })
+    .map(el => el.type === 'text' && el.textMetrics
+      ? { ...el, render: zplTextRender(el.textMetrics, el.font, el.y) }
+      : el)
 )
 
 // Fit the label within the max box while preserving aspect ratio.
@@ -133,16 +147,37 @@ function barX(el: { x: number; w: number }, j: number) {
           :transform="el.transform || undefined"
           @pointerdown="onPointerDown(el.id, $event)"
         >
-          <!-- Text -->
-          <text
-            v-if="el.type === 'text'"
-            :x="el.x"
-            :y="el.y + el.h"
-            :font-size="el.h"
-            :fill="el.reverse ? 'white' : 'black'"
-            font-family="'Helvetica Neue', Arial, sans-serif"
-            font-weight="600"
-          >{{ el.text }}</text>
+          <!--
+            Text, drawn with the metrics of the ZPL font it will actually print
+            in. `font-size` comes from the printer's cap height divided by the
+            preview face's own cap ratio, and the baseline sits at the measured
+            offset below ^FO — ZPL anchors the *top of the capitals* there, not
+            the baseline. `textLength` with lengthAdjust="spacingAndGlyphs"
+            forces the run to its measured advance width, which is what makes the
+            Font and Aspect ratio controls visibly change the preview.
+          -->
+          <template v-if="el.type === 'text' && el.render">
+            <!-- ^FR inverts the field. Painting the backing black keeps reversed
+                 text legible instead of drawing white on white. -->
+            <rect
+              v-if="el.reverse"
+              :x="el.x"
+              :y="el.y"
+              :width="el.w"
+              :height="el.h"
+              fill="black"
+            />
+            <text
+              :x="el.x"
+              :y="el.render.baselineY"
+              :font-size="el.render.fontSize"
+              :class="el.render.faceClass"
+              :textLength="el.render.textLength"
+              lengthAdjust="spacingAndGlyphs"
+              :fill="el.reverse ? 'white' : 'black'"
+              xml:space="preserve"
+            >{{ el.render.content }}</text>
+          </template>
 
           <!-- Box / line -->
           <rect

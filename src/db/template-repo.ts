@@ -48,8 +48,18 @@ export function getTemplate(id: string): StoredTemplate | null {
 
 /** Create a new template. Returns the stored template. */
 export function createTemplate(def: TemplateDefinition): StoredTemplate {
+  return createTemplateWithId(`tpl_${crypto.randomBytes(8).toString('hex')}`, def)
+}
+
+/**
+ * Create a template with a caller-chosen id.
+ *
+ * Only for the built-in examples, which need stable ids so seeding can tell what
+ * it has already inserted. Everything else should use `createTemplate()` and let
+ * the id be random.
+ */
+export function createTemplateWithId(id: string, def: TemplateDefinition): StoredTemplate {
   const db = getDb()
-  const id = `tpl_${crypto.randomBytes(8).toString('hex')}`
   db.insert(labelTemplates).values({
     id,
     name: def.name,

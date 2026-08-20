@@ -59,6 +59,7 @@ import {
   renderZplHandler
 } from './handlers/template-routes'
 import { closeDb, getDb } from '../db/database'
+import { seedBuiltinTemplates } from '../db/template-seed'
 import { printJobs } from '../db/schema'
 import { eq } from 'drizzle-orm'
 import { checkForUpdates } from '../updater'
@@ -286,6 +287,18 @@ export class WebhookServer {
     this.queue = new PrintQueue(this.printer)
     this.queue.start()
 
+    // Offer the built-in example templates once, so a fresh install has
+    // something to print from. Deleting or editing one is respected.
+    try {
+      const { seeded } = seedBuiltinTemplates()
+      if (seeded.length > 0) {
+        console.log(`   Seeded ${seeded.length} example template${seeded.length > 1 ? 's' : ''}`)
+      }
+    } catch (err) {
+      // Examples are a convenience; never block startup over them.
+      console.error(`Could not seed example templates: ${(err as Error).message}`)
+    }
+
     // Start periodic update check (once per day)
     this.startUpdateCheck()
 
@@ -332,7 +345,15 @@ export class WebhookServer {
     const mimeTypes: Record<string, string> = {
       '.html': 'text/html', '.css': 'text/css', '.js': 'application/javascript',
       '.json': 'application/json', '.png': 'image/png', '.svg': 'image/svg+xml',
-      '.woff2': 'font/woff2', '.woff': 'font/woff', '.ico': 'image/x-icon'
+      '.woff2': 'font/woff2', '.woff': 'font/woff', '.ico': 'image/x-icon',
+      // The label previews self-host the ZPL preview faces from public/fonts, and
+      // three of them are TrueType. Without these they fell back to
+      // application/octet-stream, which browsers tolerate but shouldn't have to.
+      '.ttf': 'font/ttf', '.otf': 'font/otf',
+      // Those fonts ship licence notices next to them that the Apache 2.0 and
+      // Bitstream Vera terms require to travel with the files; serve them as text
+      // so they're readable rather than downloaded as binary.
+      '.txt': 'text/plain; charset=utf-8', '.md': 'text/markdown; charset=utf-8'
     }
 
     // Check multiple possible locations (dev vs distributed)
