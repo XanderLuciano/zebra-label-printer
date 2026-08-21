@@ -49,6 +49,10 @@ const saveAsOpen = ref(false)
 const saveAsName = ref('')
 const saveAsDescription = ref('')
 
+// Delete confirmation state
+const deleteOpen = ref(false)
+const deleting = ref(false)
+
 // Accurate (Labelary) preview
 const autoAccurate = ref(false)
 const accurateUrl = ref<string | null>(null)
@@ -71,6 +75,18 @@ const selectedEl = computed<TemplateElement | null>(() => {
   const ov = template.value.overrides[currentSizeKey.value]?.[el.id]
   return ov ? ({ ...el, ...ov } as TemplateElement) : el
 })
+
+/**
+ * Id prefix the server gives its seeded example templates.
+ *
+ * Only used to warn that deleting one is permanent — seeding records which ids it
+ * has already inserted, so a deleted example is never re-created. If the prefix
+ * ever changes server-side the warning just stops appearing, nothing breaks.
+ * See `BUILTIN_TEMPLATES` in src/db/template-seed.ts.
+ */
+const BUILTIN_ID_PREFIX = 'tpl_builtin_'
+
+const isBuiltinTemplate = computed(() => !!template.value.id?.startsWith(BUILTIN_ID_PREFIX))
 
 const resolved = computed(() =>
   resolveTemplate(template.value, values, { widthDots: targetW.value, heightDots: targetH.value })
@@ -389,15 +405,25 @@ function newTemplate() {
   loadId.value = undefined
 }
 
-async function removeTemplate() {
+/**
+ * Delete the loaded template, for real this time.
+ *
+ * Behind a confirmation because there is no undo: the definition is gone, and a
+ * built-in example won't be re-seeded either.
+ */
+async function confirmDelete() {
   if (!template.value.id) return
+  deleting.value = true
   try {
     await api.deleteTemplate(template.value.id)
-    toast.add({ title: 'Template deleted', color: 'success' })
+    toast.add({ title: 'Template deleted', description: template.value.name, color: 'success' })
+    deleteOpen.value = false
     await refreshTemplateList()
     newTemplate()
   } catch (e) {
     toast.add({ title: 'Delete failed', description: (e as Error).message, color: 'error' })
+  } finally {
+    deleting.value = false
   }
 }
 
@@ -521,7 +547,7 @@ onMounted(() => {
         color="error"
         variant="soft"
         label="Delete"
-        @click="removeTemplate"
+        @click="deleteOpen = true"
       />
       <UButton icon="i-lucide-printer" color="success" label="Print test" :loading="printing" @click="printTest" />
     </div>
@@ -927,6 +953,41 @@ onMounted(() => {
             :loading="saving"
             :disabled="!saveAsName.trim()"
             @click="saveAsCopy"
+          />
+        </div>
+      </template>
+    </UModal>
+
+    <!-- Delete confirmation. There is no undo, so make it deliberate. -->
+    <UModal v-model:open="deleteOpen" title="Delete this template?">
+      <template #body>
+        <div class="space-y-3">
+          <p class="text-sm">
+            <span class="font-medium">{{ template.name }}</span>
+            will be removed. This can't be undone.
+          </p>
+          <UAlert
+            v-if="isBuiltinTemplate"
+            color="warning"
+            variant="soft"
+            icon="i-lucide-triangle-alert"
+            title="This is a built-in example"
+            description="Examples are seeded once, so it won't reappear on restart. Save a copy first if you might want it back."
+          />
+          <p class="text-xs text-gray-500">
+            Past print jobs keep their own copy of what was printed, so history is unaffected.
+          </p>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full">
+          <UButton label="Cancel" color="neutral" variant="soft" @click="deleteOpen = false" />
+          <UButton
+            label="Delete template"
+            icon="i-lucide-trash-2"
+            color="error"
+            :loading="deleting"
+            @click="confirmDelete"
           />
         </div>
       </template>
