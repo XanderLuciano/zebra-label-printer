@@ -13,7 +13,7 @@ import type {
 } from '../composables/useTemplateEngine'
 import {
   emptyTemplate, newElement, resolveTemplate, toPrintElements, sizeKey, substitute,
-  SIZE_PRESETS, BARCODE_TYPES, DPI,
+  suggestCopyName, SIZE_PRESETS, BARCODE_TYPES, DPI,
 } from '../composables/useTemplateEngine'
 import {
   ZPL_FONT_IDS, zplFont, measureZplText, DESIGNER_DEFAULT_RATIO,
@@ -43,6 +43,11 @@ const savedTemplates = ref<Array<{ id: string; name: string }>>([])
 const loadId = ref<string | undefined>(undefined)
 const saving = ref(false)
 const printing = ref(false)
+
+// "Save as copy" — prompt state
+const saveAsOpen = ref(false)
+const saveAsName = ref('')
+const saveAsDescription = ref('')
 
 // Accurate (Labelary) preview
 const autoAccurate = ref(false)
@@ -304,6 +309,51 @@ async function save() {
   }
 }
 
+function openSaveAs() {
+  saveAsName.value = suggestCopyName(
+    template.value.name,
+    savedTemplates.value.map(t => t.name),
+  )
+  saveAsDescription.value = template.value.description ?? ''
+  saveAsOpen.value = true
+}
+
+/**
+ * Save the current editor state as a brand-new template, leaving the original
+ * untouched — the quick way to build a second label off an existing layout.
+ *
+ * Copies what's on screen rather than re-fetching the stored definition, so
+ * unsaved tweaks come along too. Afterwards the editor points at the copy, so
+ * the next plain Save updates the new template instead of silently writing back
+ * to the one it was forked from.
+ */
+async function saveAsCopy() {
+  const name = saveAsName.value.trim()
+  if (!name) return
+  const description = saveAsDescription.value.trim()
+  saving.value = true
+  try {
+    const res = await api.createTemplate({
+      ...buildDef(),
+      name,
+      description: description || undefined,
+    })
+    // Set the id before loadId, so the loadId watcher sees them agree and
+    // doesn't re-fetch and discard the state we just copied.
+    template.value.id = res.template.id
+    template.value.name = name
+    template.value.description = description
+    loadId.value = res.template.id
+    saveAsOpen.value = false
+    toast.add({ title: 'Saved as a new template', description: name, color: 'success' })
+    await refreshTemplateList()
+  } catch (e) {
+    toast.add({ title: 'Save failed', description: (e as Error).message, color: 'error' })
+  } finally {
+    saving.value = false
+  }
+}
+
 async function loadTemplate(id: string) {
   try {
     const res = await api.getTemplate(id)
@@ -455,6 +505,16 @@ onMounted(() => {
 
       <UButton icon="i-lucide-file-plus" variant="soft" color="neutral" label="New" @click="newTemplate" />
       <UButton icon="i-lucide-save" color="primary" label="Save" :loading="saving" @click="save" />
+      <!-- Only meaningful once there's a saved template to fork from; before
+           that, plain Save already creates a new one. -->
+      <UButton
+        v-if="template.id"
+        icon="i-lucide-copy"
+        variant="soft"
+        color="neutral"
+        label="Save as copy"
+        @click="openSaveAs"
+      />
       <UButton
         v-if="template.id"
         icon="i-lucide-trash-2"
@@ -786,6 +846,22 @@ onMounted(() => {
 
         <UCard class="mt-5" :ui="{ body: 'p-4 space-y-3' }">
           <template #header>
+            <span class="font-medium text-sm">Template details</span>
+          </template>
+          <UFormField label="Description" help="Shown when picking this template on the Print page.">
+            <UTextarea
+              v-model="template.description"
+              :rows="2"
+              size="sm"
+              autoresize
+              placeholder="What this label is for"
+              class="w-full"
+            />
+          </UFormField>
+        </UCard>
+
+        <UCard class="mt-5" :ui="{ body: 'p-4 space-y-3' }">
+          <template #header>
             <span class="font-medium text-sm">Base design size</span>
           </template>
           <p class="text-xs text-gray-500">
@@ -808,5 +884,52 @@ onMounted(() => {
         </UCard>
       </div>
     </div>
+
+    <!-- Save as copy: name the fork before creating it -->
+    <UModal
+      v-model:open="saveAsOpen"
+      title="Save as a new template"
+      description="Copies the current design, variables and per-size overrides. The template you started from is left untouched."
+    >
+      <template #body>
+        <div class="space-y-3">
+          <UFormField label="Name" :help="template.id ? `Copying from ${template.name}` : undefined">
+            <UInput
+              v-model="saveAsName"
+              autofocus
+              placeholder="Template name"
+              icon="i-lucide-tag"
+              class="w-full"
+              @keydown.enter="saveAsCopy"
+            />
+          </UFormField>
+          <!-- Offered here because a copy would otherwise inherit the original's
+               description, which the Print page shows. -->
+          <UFormField label="Description" help="Shown when picking this template on the Print page.">
+            <UTextarea
+              v-model="saveAsDescription"
+              :rows="2"
+              size="sm"
+              autoresize
+              placeholder="What this label is for"
+              class="w-full"
+            />
+          </UFormField>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full">
+          <UButton label="Cancel" color="neutral" variant="soft" @click="saveAsOpen = false" />
+          <UButton
+            label="Save copy"
+            icon="i-lucide-copy"
+            color="primary"
+            :loading="saving"
+            :disabled="!saveAsName.trim()"
+            @click="saveAsCopy"
+          />
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>

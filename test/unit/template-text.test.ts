@@ -9,6 +9,7 @@ import { describe, it, expect } from 'vitest'
 import {
   resolveTemplate,
   substitute,
+  suggestCopyName,
   emptyTemplate,
   type LabelTemplate,
   type TemplateElement
@@ -162,6 +163,42 @@ describe('resolveTemplate text alignment', () => {
       templateWith(textEl({ content: 'WWWW', xPct: 50, align: 'center' })), {}, target
     )[0]!
     expect(narrow.x).toBeGreaterThan(wide.x)
+  })
+})
+
+describe('suggestCopyName', () => {
+  it('appends "copy" when the name is free', () => {
+    expect(suggestCopyName('Part Label 2x1', [])).toBe('Part Label 2x1 copy')
+  })
+
+  it('numbers further copies rather than duplicating a name', () => {
+    // Names aren't unique in the database, and both template pickers show only
+    // the name — so two identical ones would be indistinguishable.
+    const existing = ['Part Label 2x1', 'Part Label 2x1 copy']
+    expect(suggestCopyName('Part Label 2x1', existing)).toBe('Part Label 2x1 copy 2')
+    expect(suggestCopyName('Part Label 2x1', [...existing, 'Part Label 2x1 copy 2']))
+      .toBe('Part Label 2x1 copy 3')
+  })
+
+  it('fills a gap in the numbering', () => {
+    const existing = ['A copy', 'A copy 3']
+    expect(suggestCopyName('A', existing)).toBe('A copy 2')
+  })
+
+  it('falls back for an unnamed template', () => {
+    expect(suggestCopyName('', [])).toBe('Untitled Template copy')
+    expect(suggestCopyName('   ', [])).toBe('Untitled Template copy')
+  })
+
+  it('trims the source name', () => {
+    expect(suggestCopyName('  Asset Tag  ', [])).toBe('Asset Tag copy')
+  })
+
+  it('still returns something unused past a hundred copies', () => {
+    const existing = ['X copy', ...Array.from({ length: 100 }, (_, i) => `X copy ${i + 2}`)]
+    const name = suggestCopyName('X', existing)
+    expect(existing).not.toContain(name)
+    expect(name.startsWith('X copy ')).toBe(true)
   })
 })
 

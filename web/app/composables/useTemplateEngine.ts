@@ -251,6 +251,29 @@ export function substitute(
   })
 }
 
+/**
+ * Name for a copy of a template that doesn't collide with an existing one.
+ *
+ * Template names aren't unique in the database, so nothing stops two rows called
+ * "Part Label 2x1" — but the designer's load dropdown and the print page's picker
+ * both show only the name, which would leave them indistinguishable. Yields
+ * "<name> copy", then "<name> copy 2", and so on.
+ *
+ * @param base - Name being copied from. Blank falls back to "Untitled Template".
+ * @param existing - Names already in use.
+ */
+export function suggestCopyName(base: string, existing: Iterable<string>): string {
+  const taken = new Set(existing)
+  const root = `${(base ?? '').trim() || 'Untitled Template'} copy`
+  if (!taken.has(root)) return root
+  for (let n = 2; n <= 100; n++) {
+    if (!taken.has(`${root} ${n}`)) return `${root} ${n}`
+  }
+  // Someone has a hundred copies. Fall back to something certainly unused rather
+  // than returning a name that silently duplicates one.
+  return `${root} ${Date.now().toString(36)}`
+}
+
 /** List variable names referenced anywhere in the template's content fields. */
 export function usedVariables(tpl: LabelTemplate): string[] {
   const found = new Set<string>()
