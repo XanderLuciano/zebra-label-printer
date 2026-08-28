@@ -70,10 +70,32 @@ export interface PrinterProfile {
   updatedAt?: string;
 }
 
-/** A server printer with the live CUPS status the server reported alongside it. */
+/**
+ * Whether a printer's device is physically attached.
+ *
+ * Separate from the queue status on purpose: CUPS doesn't watch USB, so a queue
+ * can report `idle` and `accepting` with the cable unplugged. `unknown` means the
+ * question can't be answered (a networked printer, or a host where CUPS can't
+ * enumerate devices) and must never be shown as unplugged.
+ */
+export type DevicePresence = 'present' | 'absent' | 'unknown';
+
+/**
+ * The single verdict to render for a printer.
+ *
+ * `unplugged` and `offline` are deliberately distinct: one means go and check the
+ * cable, the other means CUPS has stopped a printer that is still attached.
+ */
+export type PrinterHealth = 'ready' | 'unplugged' | 'offline' | 'missing' | 'unknown';
+
+/** A server printer with the live state the server reported alongside it. */
 export interface PrinterStatusView extends PrinterProfile {
   status: 'idle' | 'printing' | 'unavailable' | 'unknown';
   accepting: boolean;
+  presence: DevicePresence;
+  health: PrinterHealth;
+  /** Human-readable explanation of `health`, written by the server. */
+  healthMessage: string;
 }
 
 /** A printer CUPS can see that hasn't been configured yet. */
@@ -206,6 +228,10 @@ export interface DebugInfo {
     dpi: number;
     tracking: MediaTracking;
     pending: number;
+    health: PrinterHealth;
+    presence: DevicePresence;
+    /** When the health monitor last saw this printer change state. */
+    healthChangedAt: string | null;
   }>;
   queue: { pending: number; processorRunning: boolean };
   database: { path: string; sizeBytes: number; sizeFormatted: string; stats: JobStats };

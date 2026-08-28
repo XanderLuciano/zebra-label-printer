@@ -105,12 +105,18 @@ export function recordPrinterEvent(
   }).run()
 }
 
-/** Get recent printer events */
+/**
+ * Get recent printer events, newest first.
+ *
+ * Ordered by id as well as timestamp: `created_at` has one-second resolution, so
+ * an unplug and the reconnect that follows it can share a timestamp and come back
+ * in arbitrary order. The autoincrementing id is the real sequence.
+ */
 export function getPrinterEvents(limit = DEFAULT_EVENT_LIMIT): PrinterEvent[] {
   const db = getDb()
   const rows = db.select()
     .from(printerEvents)
-    .orderBy(desc(printerEvents.createdAt))
+    .orderBy(desc(printerEvents.createdAt), desc(printerEvents.id))
     .limit(limit)
     .all()
 

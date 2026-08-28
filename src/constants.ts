@@ -208,6 +208,56 @@ export const DEFAULT_EVENT_LIMIT = 50
 /** Number of recent label sizes to remember */
 export const MAX_RECENT_SIZES = 10
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// DEVICE PRESENCE (hot-plug detection)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * URI schemes for directly attached devices, which CUPS can enumerate on demand.
+ *
+ * Presence is only meaningful for these. A networked printer's absence from
+ * `lpinfo` says nothing about whether it's reachable — mDNS may simply not have
+ * discovered it — so those stay 'unknown'.
+ */
+export const LOCAL_DEVICE_URI_SCHEMES = ['usb', 'serial', 'parallel'] as const
+
+/**
+ * Schemes passed to `lpinfo --include-schemes`.
+ *
+ * Restricting the scan is not an optimisation, it's a requirement: a bare
+ * `lpinfo -v` probes every backend including network discovery and takes ~14
+ * seconds, while limiting it to the local schemes returns in ~150ms.
+ */
+export const DEVICE_SCAN_SCHEMES = LOCAL_DEVICE_URI_SCHEMES.join(',')
+
+/** How long a device-presence scan may run before being abandoned */
+export const DEVICE_SCAN_TIMEOUT_MS = 4000
+
+/**
+ * How often the health monitor polls for printers appearing and disappearing.
+ *
+ * Slower than the queue tick on purpose: a presence-checking discovery shells out
+ * four times and costs ~500ms, so polling it every few seconds would spend a
+ * noticeable fraction of the process's life in `lpstat`. Hot-plug does not need
+ * to be caught within seconds.
+ */
+export const PRINTER_HEALTH_INTERVAL_MS = 15000
+
+// ─── Printer Health ──────────────────────────────────────────────────────────
+//
+// A single verdict per printer, combining the CUPS queue state with whether the
+// device is physically attached. These are distinct problems with distinct fixes,
+// which is why 'unplugged' and 'offline' are not collapsed together.
+//
+//   ready     — queue is up and the device is attached (or unknowable)
+//   unplugged — the device is gone; the queue may still claim to be idle
+//   offline   — device is there but CUPS has stopped or is rejecting the queue
+//   missing   — the CUPS queue itself no longer exists
+//   unknown   — CUPS could not be consulted
+
+export const PRINTER_HEALTH_STATES = ['ready', 'unplugged', 'offline', 'missing', 'unknown'] as const
+export type PrinterHealth = typeof PRINTER_HEALTH_STATES[number]
+
 /**
  * How many pending jobs the queue processor considers per tick.
  *

@@ -28,6 +28,7 @@ import {
 } from '../../constants'
 import type { MediaTracking } from '../../constants'
 import type { PrintQueue } from '../../queue'
+import type { PrinterHealthMonitor } from '../../printer-health'
 
 /** GET /api/health — server and printer status */
 export const healthHandler: Handler = async (_req, res, printer) => {
@@ -142,7 +143,11 @@ export function jobCancelHandler(apiKey: string, getQueue: () => PrintQueue | nu
 // ─── Debug ───────────────────────────────────────────────────────────────────
 
 /** GET /api/debug — system diagnostics */
-export function debugHandler(apiKey: string, getQueue: () => PrintQueue | null): Handler {
+export function debugHandler(
+  apiKey: string,
+  getQueue: () => PrintQueue | null,
+  getHealth?: () => PrinterHealthMonitor | null
+): Handler {
   return async (req, res, printer) => {
     if (!checkAuth(req, res, apiKey)) return
 
@@ -150,9 +155,17 @@ export function debugHandler(apiKey: string, getQueue: () => PrintQueue | null):
     const dbSize = sqlite.prepare('SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()').get() as { size: number }
 
     // Reported per configured printer rather than for a single one, since the
-    // interesting failure now is "which of my printers is offline".
+    // interesting failure now is "which of my printers is offline" — and whether
+    // it's offline or simply unplugged, which are different problems.
+    // Poll rather than serving the last scheduled observation: diagnostics are
+    // requested by a human who wants the current truth, and it keeps this in step
+    // with GET /api/printers, which computes health live.
+    const monitor = getHealth?.() ?? null
+    if (monitor) await monitor.check().catch(() => { /* fall back to last known */ })
+
     const printers = []
     for (const profile of listPrinterProfiles()) {
+      const state = monitor?.get(profile.id)
       printers.push({
         id: profile.id,
         name: profile.name,
@@ -162,7 +175,10 @@ export function debugHandler(apiKey: string, getQueue: () => PrintQueue | null):
         labelSize: profile.labelSize,
         dpi: profile.dpi,
         tracking: profile.tracking,
-        pending: countPendingJobsForPrinter(profile.id)
+        pending: countPendingJobsForPrinter(profile.id),
+        health: state?.health ?? 'unknown',
+        presence: state?.presence ?? 'unknown',
+        healthChangedAt: state?.changedAt ?? null
       })
     }
 

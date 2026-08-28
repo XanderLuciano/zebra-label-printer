@@ -26,8 +26,10 @@ import {
 import { printerCreateSchema, printerUpdateSchema } from '../../schemas'
 import type { PrinterCreateRequest, PrinterUpdateRequest } from '../../schemas'
 import type { PrinterRegistry } from '../../printer-registry'
-import type { LabelSize, PrinterInfo, PrinterProfile } from '../../types'
+import { printerHealth, healthMessage } from '../../printer-health'
+import type { DevicePresence, LabelSize, PrinterInfo, PrinterProfile } from '../../types'
 import { DEFAULT_DPI } from '../../constants'
+import type { PrinterHealth } from '../../constants'
 
 type GetRegistry = () => PrinterRegistry | null
 
@@ -37,6 +39,17 @@ interface PrinterStatusView extends PrinterProfile {
   status: PrinterInfo['status']
   /** Whether CUPS is accepting jobs for it */
   accepting: boolean
+  /**
+   * Whether the device is physically attached.
+   *
+   * Reported separately from `status` because CUPS does not watch USB: a queue can
+   * be `idle` and `accepting` with the cable unplugged.
+   */
+  presence: DevicePresence
+  /** The combined verdict clients should render */
+  health: PrinterHealth
+  /** Human-readable explanation of `health` */
+  healthMessage: string
 }
 
 /**
@@ -66,27 +79,36 @@ export function printersListHandler(apiKey: string): Handler {
 
     const profiles = listPrinterProfiles()
 
-    let found: PrinterInfo[] = []
+    // `checkPresence` is what makes a pulled cable visible here: without it a
+    // queue CUPS hasn't tried to print to still looks idle and ready.
+    // Null when CUPS didn't answer: configured printers are still listed, but as
+    // 'unknown' rather than 'missing', since a CUPS outage hasn't deleted anything.
+    let found: PrinterInfo[] | null = null
     try {
-      const { discoverPrinters } = await import('../../discovery')
-      found = await discoverPrinters()
+      const { discoverPrintersDetailed } = await import('../../discovery')
+      const result = await discoverPrintersDetailed({ checkPresence: true })
+      found = result.cupsAvailable ? result.printers : null
     } catch {
-      // No CUPS on this machine. Configured printers are still listed; they just
-      // report an unknown status.
+      // No CUPS on this machine.
     }
 
-    const byName = new Map(found.map(info => [info.name, info]))
+    const cupsAvailable = found !== null
+    const byName = new Map((found ?? []).map(info => [info.name, info]))
     const printers: PrinterStatusView[] = profiles.map(profile => {
       const info = profile.cupsName ? byName.get(profile.cupsName) : undefined
+      const health = printerHealth(info, cupsAvailable)
       return {
         ...profile,
         status: info?.status ?? 'unknown',
-        accepting: info?.accepting ?? false
+        accepting: info?.accepting ?? false,
+        presence: info?.presence ?? 'unknown',
+        health,
+        healthMessage: healthMessage(health, info)
       }
     })
 
     const configuredNames = new Set(profiles.map(p => p.cupsName).filter(Boolean))
-    const discovered = found.filter(info => !configuredNames.has(info.name))
+    const discovered = (found ?? []).filter(info => !configuredNames.has(info.name))
 
     json(res, { printers, discovered })
   }

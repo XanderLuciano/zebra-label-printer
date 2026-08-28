@@ -49,6 +49,7 @@ src/
     template-repo.ts    → CRUD for label_templates (JSON blob + mirrored columns)
     template-seed.ts    → Built-in example templates + one-time idempotent seeding
   printer-registry.ts   → PrinterRegistry: printer id → live connection, geometry resolution
+  printer-health.ts     → Hot-plug detection: health verdicts + connect/disconnect monitor
   queue.ts              → PrintQueue: persistent job queue with background processor
   webhook.ts            → Thin re-export + standalone entry point
   server/               → Modular HTTP server (split from webhook.ts)
@@ -200,6 +201,55 @@ the storage location and the final transport differ.
 no CUPS queue on the host, so `WebhookServer.start()` returns `Printer | null` and `Handler`
 receives `Printer | null`. Handlers that need one answer 503.
 
+### Hot-plug detection: `lpstat` tells you about queues, `lpinfo` about hardware
+
+**CUPS does not watch USB.** It discovers a missing device when it next tries to print, so a
+queue sits `idle` and `accepting` with the cable unplugged. Reporting queue status alone
+therefore shows an absent printer as ready, which is how an unplug used to go unnoticed until
+someone's print failed.
+
+The two commands answer different questions, and the distinction is the whole mechanism:
+
+| Command | Answers | Survives unplugging? |
+|---|---|---|
+| `lpstat -p` | What state is the *queue* in? | yes — stays `idle` |
+| `lpstat -v` | What device URI is the queue *configured* with? | yes |
+| `lpinfo -v` | What devices are *actually attached* right now? | no — this is the signal |
+
+`listAttachedDevices()` in `discovery.ts` runs the `lpinfo` scan; `devicePresence()` matches a
+queue's URI against the result. Three constraints, all learned the hard way:
+
+- **Always pass `--include-schemes`.** A bare `lpinfo -v` probes every backend including
+  network discovery and takes **~14 seconds**. Limited to `usb,serial,parallel` it returns in
+  ~150ms. This is a correctness requirement, not a tuning knob.
+- **Presence is tri-state.** `unknown` is not `absent`. A networked printer missing from local
+  enumeration proves nothing, and a host where `lpinfo` needs privileges must not have every
+  printer declared unplugged — `listAttachedDevices()` returns null there, which maps to
+  `unknown`.
+- **Match on the device URI, not the `Interface:` line.** On macOS that line is a PPD path, not
+  a device URI, so discovery reads `lpstat -v` as well. That also makes USB serial-number
+  extraction and vendor-id Zebra detection work, which they previously didn't.
+
+`printerHealth()` in `printer-health.ts` folds queue state and presence into one verdict —
+`ready` / `unplugged` / `offline` / `missing` / `unknown` — and is shared by `GET /api/printers`
+and the monitor so the two can't disagree. `unplugged` and `offline` stay distinct because the
+fixes differ: check the cable, versus re-enable a queue whose printer is still attached.
+
+`PrinterHealthMonitor` polls every `PRINTER_HEALTH_INTERVAL_MS` (15s, deliberately slower than
+the queue tick since a presence-checking discovery costs ~500ms) and writes `printer_events`
+**only on transitions**. Two rules keep that log meaningful:
+
+- A healthy first sighting is silent, so restarts don't write an event per printer. A first
+  sighting that is already broken *is* recorded.
+- `unknown` never becomes the comparison baseline; the last determinate reading is carried
+  forward. Otherwise a momentary CUPS hiccup reads as ready → unknown → ready and logs a
+  bogus `recovered`.
+
+Related: `Printer.isReady()` refuses to run `cupsenable` when presence is `absent`. `cupsenable`
+succeeds whether or not hardware is there, so the previous unconditional recovery flipped an
+unplugged printer's queue back to `idle` and reported it ready — masking the disconnect. It
+still recovers on `unknown`, which is the networked/no-`lpinfo` case.
+
 ### Which label size a job is rendered for
 
 `resolveJobLabelSize()` in `printer-registry.ts` is the single rule. Most specific first:
@@ -331,6 +381,9 @@ must drop the `job_logs` foreign key first and restore it afterwards.**
 - **ZPL**: Text labels print with the raw `-o raw` CUPS flag (bypasses CUPS filtering)
 - **No ink needed**: Thermal direct printing — the labels have heat-sensitive coating
 - **Discovery fallback**: If CUPS is unavailable, direct USB discovery can be added to `src/discovery.ts`
+- **Hot-plug**: unplugging a USB printer is detected without a print being attempted — see
+  "Hot-plug detection" above. Needs `lpinfo` on the host; without it printers report `unknown`
+  rather than being wrongly marked unplugged.
 
 ### Media configuration (`^PW` / `^ML` / `^MN`)
 
@@ -415,5 +468,5 @@ When tagging a new release:
 
 | Version | Date | Changes |
 |---------|------|---------|
-| unreleased | — | Per-printer configuration: `printers` table, `PrinterRegistry`, printer CRUD API, `printerId` on print requests, per-printer queueing, multi-device WebUSB, unified printer list in Settings. Fixed timestamp defaults storing a string literal instead of a date (migration `0004`) |
+| unreleased | — | Per-printer configuration: `printers` table, `PrinterRegistry`, printer CRUD API, `printerId` on print requests, per-printer queueing, multi-device WebUSB, unified printer list in Settings. Hot-plug detection via `lpinfo` device enumeration, with a health monitor recording connect/disconnect transitions. Fixed timestamp defaults storing a string literal instead of a date (migration `0004`) |
 | v0.1.0 | 2026-04-27 | Initial release: ZPL builder, job queue, Nuxt 4 web UI, serial printing, label size management, Docker, one-command install |

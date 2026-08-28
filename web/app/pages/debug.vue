@@ -65,12 +65,28 @@ const formatUptime = (s: number) => {
             </p>
           </div>
           <div>
-            <span class="text-gray-500">Tracking</span>
-            <p>{{ printer.tracking }}</p>
+            <span class="text-gray-500">Health</span>
+            <p class="flex items-center gap-1.5">
+              <span
+                class="inline-block w-2 h-2 rounded-full shrink-0"
+                :class="{
+                  'bg-green-500': printer.health === 'ready',
+                  'bg-red-500': printer.health === 'unplugged' || printer.health === 'missing',
+                  'bg-amber-500': printer.health === 'offline',
+                  'bg-gray-300 dark:bg-gray-600': printer.health === 'unknown',
+                }"
+              />
+              {{ printer.health }}
+            </p>
+            <p class="text-xs text-gray-500">
+              device {{ printer.presence }}
+              <template v-if="printer.healthChangedAt"> &middot; since {{ printer.healthChangedAt }}</template>
+            </p>
           </div>
           <div>
             <span class="text-gray-500">Pending</span>
             <p class="font-medium">{{ printer.pending }}</p>
+            <p class="text-xs text-gray-500">{{ printer.tracking }}</p>
           </div>
         </div>
       </div>

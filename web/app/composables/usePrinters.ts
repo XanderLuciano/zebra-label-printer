@@ -22,7 +22,13 @@
  * for the browser to push over USB.
  */
 
-import type { DiscoveredPrinter, MediaTracking, PrinterProfile, PrinterStatusView } from './useApi'
+import type {
+  DiscoveredPrinter,
+  MediaTracking,
+  PrinterHealth,
+  PrinterProfile,
+  PrinterStatusView,
+} from './useApi'
 
 /** Local printer profiles, keyed by device id. */
 const PRINTERS_KEY = 'zebra-printers'
@@ -54,7 +60,18 @@ export interface PrinterEntry extends PrinterProfile {
   ready: boolean
   /** Why it isn't ready, when it isn't. */
   readyHint?: string
+  /**
+   * The single verdict to render.
+   *
+   * Server printers get this from the server, which can tell an unplugged cable
+   * from a stopped queue. Local printers are derived from the WebUSB connection:
+   * losing the device is the same situation, so it reports 'unplugged' too.
+   */
+  health: PrinterHealth
 }
+
+/** How long a printer list stays fresh before an open page refetches it. */
+const POLL_INTERVAL_MS = 15000
 
 // Module-level so every component sees one list and one selection.
 const localProfiles = ref<PrinterProfile[]>([])
@@ -127,30 +144,28 @@ export function usePrinters() {
     const local: PrinterEntry[] = localProfiles.value.map(profile => {
       const deviceId = profile.usbDeviceId ?? profile.id.slice(LOCAL_PRINTER_ID_PREFIX.length)
       const connected = localPrinter.isConnected(deviceId)
+      const supported = localPrinter.isSupported.value
       return {
         ...profile,
         deviceId,
         ready: connected,
+        health: connected ? 'ready' : supported ? 'unplugged' : 'unknown',
         readyHint: connected
           ? undefined
-          : localPrinter.isSupported.value
+          : supported
             ? 'Not connected — plug it in and reconnect from Settings'
             : 'Local printing needs Chrome or Edge on HTTPS or localhost',
       }
     })
 
-    const server: PrinterEntry[] = serverProfiles.value.map(profile => {
-      const ready = profile.status === 'idle' || profile.status === 'printing'
-      return {
-        ...profile,
-        ready,
-        readyHint: ready
-          ? undefined
-          : profile.status === 'unknown'
-            ? 'The server cannot see this printer right now'
-            : `Printer is ${profile.status}`,
-      }
-    })
+    // Server printers arrive with a health verdict already computed, because only
+    // the server can tell an unplugged cable from a queue CUPS has stopped.
+    const server: PrinterEntry[] = serverProfiles.value.map(profile => ({
+      ...profile,
+      ready: profile.health === 'ready',
+      health: profile.health,
+      readyHint: profile.health === 'ready' ? undefined : profile.healthMessage,
+    }))
 
     return [...local, ...server]
   })
@@ -235,6 +250,29 @@ export function usePrinters() {
         localProfiles.value.map(p => p.usbDeviceId).filter((id): id is string => !!id),
       ),
     ])
+  }
+
+  /**
+   * Keep the server printer list fresh while a component is mounted.
+   *
+   * Without this, a printer unplugged on the server stays green until the page is
+   * reloaded — the state is correct on the server, nothing was asking for it.
+   * Automatically stops on unmount.
+   */
+  function watchWhileMounted(intervalMs = POLL_INTERVAL_MS): void {
+    if (import.meta.server) return
+
+    let timer: ReturnType<typeof setInterval> | null = null
+
+    onMounted(async () => {
+      await load()
+      timer = setInterval(() => { refreshServer() }, intervalMs)
+    })
+
+    onUnmounted(() => {
+      if (timer) clearInterval(timer)
+      timer = null
+    })
   }
 
   // ── Selection ─────────────────────────────────────────────────────────────
@@ -426,6 +464,7 @@ export function usePrinters() {
     localUsbError: localPrinter.lastError,
     load,
     refreshServer,
+    watchWhileMounted,
     select,
     get,
     configure,

@@ -51,10 +51,13 @@ export const OPENAPI_SPEC = {
         operationId: 'listPrinters',
         tags: ['Printers'],
         description:
-          'Configured printers, each with its own media configuration, plus the ' +
-          'CUPS queues that are visible but not configured yet. ' +
+          'Configured printers, each with its own media configuration and live health, plus ' +
+          'the CUPS queues that are visible but not configured yet. ' +
           'Browser-attached (WebUSB) printers are not listed here: that pairing ' +
-          'belongs to a single browser, so those profiles are stored client-side.',
+          'belongs to a single browser, so those profiles are stored client-side.\n\n' +
+          'Each printer is checked against the devices CUPS can actually see, so a printer ' +
+          'whose USB cable has been pulled reports `health: "unplugged"` even though its queue ' +
+          'still claims to be idle — CUPS only notices a missing device when it tries to print.',
         responses: {
           '200': {
             description: 'Configured printers and unconfigured candidates',
@@ -1224,7 +1227,13 @@ export const OPENAPI_SPEC = {
                           labelSize: { $ref: '#/components/schemas/LabelSize' },
                           dpi: { type: 'integer' },
                           tracking: { $ref: '#/components/schemas/MediaTracking' },
-                          pending: { type: 'integer' }
+                          pending: { type: 'integer' },
+                          health: { $ref: '#/components/schemas/PrinterHealth' },
+                          presence: { $ref: '#/components/schemas/DevicePresence' },
+                          healthChangedAt: {
+                            type: ['string', 'null'],
+                            description: 'When the health monitor last saw this printer change state.'
+                          }
                         }
                       }
                     },
@@ -1758,6 +1767,23 @@ export const OPENAPI_SPEC = {
           updatedAt: { type: 'string' }
         }
       },
+      DevicePresence: {
+        type: 'string',
+        enum: ['present', 'absent', 'unknown'],
+        description:
+          'Whether the printer is physically attached. Reported separately from `status` ' +
+          'because CUPS does not watch USB: a queue can be idle and accepting with the cable ' +
+          'unplugged. "unknown" means the question cannot be answered — a networked printer, ' +
+          'or a host where CUPS cannot enumerate devices — and must not be shown as unplugged.'
+      },
+      PrinterHealth: {
+        type: 'string',
+        enum: ['ready', 'unplugged', 'offline', 'missing', 'unknown'],
+        description:
+          'The single verdict to render, combining queue state with device presence. ' +
+          '"unplugged" (the device is gone) and "offline" (attached, but CUPS stopped the queue) ' +
+          'are deliberately distinct, because the fixes differ.'
+      },
       PrinterProfileStatus: {
         allOf: [
           { $ref: '#/components/schemas/PrinterProfile' },
@@ -1769,7 +1795,10 @@ export const OPENAPI_SPEC = {
                 enum: ['idle', 'printing', 'unavailable', 'unknown'],
                 description: 'Live CUPS status. "unknown" when discovery cannot see this queue.'
               },
-              accepting: { type: 'boolean', description: 'Whether CUPS is accepting jobs for it.' }
+              accepting: { type: 'boolean', description: 'Whether CUPS is accepting jobs for it.' },
+              presence: { $ref: '#/components/schemas/DevicePresence' },
+              health: { $ref: '#/components/schemas/PrinterHealth' },
+              healthMessage: { type: 'string', description: 'Human-readable explanation of `health`.' }
             }
           }
         ]
@@ -1798,12 +1827,13 @@ export const OPENAPI_SPEC = {
         description: 'A printer CUPS reports, before it has been configured.',
         properties: {
           name: { type: 'string', example: 'ZTC-GK420d' },
-          uri: { type: 'string' },
+          uri: { type: 'string', description: 'Device URI, e.g. `usb://Zebra/ZTC%20GK420d?serial=38J1542`.' },
           model: { type: 'string' },
           status: { type: 'string', enum: ['idle', 'printing', 'unavailable', 'unknown'] },
           accepting: { type: 'boolean' },
           serial: { type: 'string' },
-          isZebra: { type: 'boolean' }
+          isZebra: { type: 'boolean' },
+          presence: { $ref: '#/components/schemas/DevicePresence' }
         }
       },
 

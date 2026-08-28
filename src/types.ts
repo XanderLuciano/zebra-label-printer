@@ -2,11 +2,27 @@
 
 import type { MediaTracking, PrinterConnection, PrinterTransport } from './constants'
 
+/**
+ * Is the physical device behind a print queue actually attached?
+ *
+ * Distinct from the queue's status. CUPS does not watch USB — it only discovers a
+ * missing device when it tries to print — so a queue can sit `idle` and
+ * `accepting` with the cable unplugged. `unknown` is used wherever the question
+ * can't be answered (a networked printer, or `lpinfo` unavailable) and must never
+ * be treated as absent.
+ */
+export type DevicePresence = 'present' | 'absent' | 'unknown'
+
 /** A discovered printer */
 export interface PrinterInfo {
   /** CUPS printer name (e.g. 'ZTC-GK420d') */
   name: string;
-  /** Device URI */
+  /**
+   * Device URI, e.g. `usb://Zebra%20Technologies/ZTC%20GK420d?serial=38J1542`.
+   *
+   * Read from `lpstat -v`. Falls back to the `Interface:`/`Device:` line of
+   * `lpstat -l -p`, which on macOS is a PPD path rather than a device URI.
+   */
   uri: string;
   /** Printer make/model */
   model: string;
@@ -18,6 +34,13 @@ export interface PrinterInfo {
   serial?: string;
   /** Whether this is a Zebra printer */
   isZebra: boolean;
+  /**
+   * Whether the device is physically attached right now.
+   *
+   * Only populated when discovery is asked for it (`checkPresence`), since it
+   * costs an extra `lpinfo` call. Defaults to 'unknown'.
+   */
+  presence: DevicePresence;
 }
 
 /** Options for a text element on a label */
@@ -132,12 +155,32 @@ export interface PrintResult {
   error?: string;
 }
 
+/**
+ * The result of a discovery run, including whether CUPS answered.
+ *
+ * An empty `printers` list means nothing on its own: CUPS may know of no printers,
+ * or may not have answered. Anything deciding that a printer has *gone away* needs
+ * `cupsAvailable` to tell those apart.
+ */
+export interface DiscoveryResult {
+  printers: PrinterInfo[];
+  /** False when CUPS could not be consulted at all. */
+  cupsAvailable: boolean;
+}
+
 /** Options for printer discovery */
 export interface DiscoveryOptions {
   /** Filter to only Zebra printers */
   zebraOnly?: boolean;
   /** Include network printers */
   includeNetwork?: boolean;
+  /**
+   * Also determine whether each printer's device is physically attached.
+   *
+   * Costs one extra `lpinfo` call (~150ms), so it's opt-in rather than the
+   * default: only the printer list and the health monitor need it.
+   */
+  checkPresence?: boolean;
 }
 
 /** Webhook configuration */

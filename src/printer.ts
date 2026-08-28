@@ -6,12 +6,12 @@
  */
 
 import { spawn } from 'child_process'
-import { discoverPrinters, findFirstZebra, getPrinter } from './discovery'
-import type { PrintResult, PrinterInfo } from './types'
+import { discoverPrinters, findFirstZebra, getPrinter, listAttachedDevices, devicePresence } from './discovery'
+import type { DevicePresence, PrintResult, PrinterInfo } from './types'
 
 // Re-export discovery functions
-export { discoverPrinters, findFirstZebra, getPrinter }
-export type { PrintResult, PrinterInfo }
+export { discoverPrinters, findFirstZebra, getPrinter, listAttachedDevices, devicePresence }
+export type { PrintResult, PrinterInfo, DevicePresence }
 
 /**
  * Printer instance representing a connected Zebra label printer.
@@ -81,11 +81,26 @@ export class Printer {
 
   /**
    * Check that the printer is ready to accept jobs.
-   * Attempts to re-enable the printer if CUPS has disabled it (e.g., USB disconnect).
+   *
+   * Attempts to re-enable the queue if CUPS has disabled it, which happens on a
+   * transient USB re-enumeration and is worth recovering from automatically.
+   *
+   * It deliberately does *not* do that when the device is known to be physically
+   * absent. `cupsenable` succeeds regardless of whether any hardware is there, so
+   * the old unconditional recovery would flip the queue of an unplugged printer
+   * back to `idle` and report it ready — masking a pulled cable and turning it
+   * into a failed print instead of a visible problem.
+   *
+   * A presence of 'unknown' still gets the recovery attempt: that's a networked
+   * printer or a host where `lpinfo` can't enumerate, and refusing to recover
+   * there would be a regression.
    */
   async isReady(): Promise<boolean> {
-    const info = await getPrinter(this.name)
+    const info = await getPrinter(this.name, { checkPresence: true })
     if (!info) return false
+
+    // The cable is out. Nothing can print, and re-enabling would only hide it.
+    if (info.presence === 'absent') return false
 
     if (info.status === 'idle' && info.accepting) return true
 
@@ -104,6 +119,17 @@ export class Printer {
     }
 
     return false
+  }
+
+  /**
+   * Whether this printer's device is physically attached right now.
+   *
+   * 'unknown' for networked printers and hosts where CUPS can't enumerate
+   * devices; see `DevicePresence`.
+   */
+  async presence(): Promise<DevicePresence> {
+    const info = await getPrinter(this.name, { checkPresence: true })
+    return info?.presence ?? 'unknown'
   }
 
   /**

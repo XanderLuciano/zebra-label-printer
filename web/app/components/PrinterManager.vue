@@ -24,9 +24,24 @@ const { applyMediaConfig, calibrate, printText } = usePrintTarget()
 
 const selected = printers.selected
 
-onMounted(() => {
-  printers.load()
-})
+// Poll while this page is open, so a printer unplugged on the server turns red
+// without needing a reload.
+printers.watchWhileMounted()
+
+/** How each health verdict is presented. */
+const HEALTH_DISPLAY: Record<string, { label: string; dot: string; colour: 'success' | 'warning' | 'error' | 'neutral'; icon: string }> = {
+  ready: { label: 'Ready', dot: 'bg-green-500', colour: 'success', icon: 'i-lucide-check' },
+  unplugged: { label: 'Unplugged', dot: 'bg-red-500', colour: 'error', icon: 'i-lucide-unplug' },
+  offline: { label: 'Stopped', dot: 'bg-amber-500', colour: 'warning', icon: 'i-lucide-pause' },
+  missing: { label: 'Missing', dot: 'bg-red-500', colour: 'error', icon: 'i-lucide-circle-help' },
+  unknown: { label: 'Unknown', dot: 'bg-gray-300 dark:bg-gray-600', colour: 'neutral', icon: 'i-lucide-circle-help' },
+}
+
+const display = computed(() => HEALTH_DISPLAY[selected.value?.health ?? 'unknown']!)
+
+function displayFor(health: string) {
+  return HEALTH_DISPLAY[health] ?? HEALTH_DISPLAY.unknown!
+}
 
 // ── Selecting ──────────────────────────────────────────────────────────────
 
@@ -36,6 +51,7 @@ const printerItems = computed(() =>
     label: p.name,
     suffix: p.connection === 'local' ? 'This browser (USB)' : 'Server',
     ready: p.ready,
+    dot: displayFor(p.health).dot,
   })))
 
 /** Short description of where the selected printer lives. */
@@ -85,6 +101,23 @@ async function addServer(cupsName: string, model: string) {
     toast.add({ title: 'Could not add printer', description: (e as Error).message, color: 'error' })
   } finally {
     addingServer.value = null
+  }
+}
+
+const rechecking = ref(false)
+
+/** Re-poll the server rather than waiting for the next tick. */
+async function recheck() {
+  rechecking.value = true
+  try {
+    await printers.refreshServer()
+    const printer = selected.value
+    if (printer?.ready) toast.add({ title: `${printer.name} is ready`, color: 'success' })
+    else if (printer) {
+      toast.add({ title: display.value.label, description: printer.readyHint, color: display.value.colour })
+    }
+  } finally {
+    rechecking.value = false
   }
 }
 
@@ -387,10 +420,7 @@ async function remove() {
             <template #item-trailing="{ item }">
               <span class="flex items-center gap-2 text-xs text-gray-500">
                 <span>{{ item.suffix }}</span>
-                <span
-                  class="w-2 h-2 rounded-full shrink-0"
-                  :class="item.ready ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-600'"
-                />
+                <span class="w-2 h-2 rounded-full shrink-0" :class="item.dot" />
               </span>
             </template>
           </USelectMenu>
@@ -406,13 +436,10 @@ async function remove() {
         />
 
         <div v-if="selected" class="flex items-start gap-2 text-sm">
-          <span
-            class="w-2.5 h-2.5 rounded-full shrink-0 mt-1.5"
-            :class="selected.ready ? 'bg-green-500' : 'bg-gray-300 dark:bg-gray-600'"
-          />
+          <span class="w-2.5 h-2.5 rounded-full shrink-0 mt-1.5" :class="display.dot" />
           <div>
             <p class="font-medium">
-              {{ selected.ready ? 'Ready' : 'Not available' }}
+              {{ display.label }}
               <span class="font-normal text-gray-500">
                 &middot; {{ selected.labelSize.name }}
                 ({{ selected.labelSize.widthDots }}×{{ selected.labelSize.heightDots }} dots @ {{ selected.dpi }} DPI)
@@ -424,9 +451,10 @@ async function remove() {
 
         <UAlert
           v-if="selected && !selected.ready"
-          color="warning"
+          :color="display.colour"
           variant="soft"
-          icon="i-lucide-unplug"
+          :icon="display.icon"
+          :title="display.label"
           :description="selected.readyHint"
         >
           <template #actions>
@@ -434,10 +462,20 @@ async function remove() {
               v-if="selected.connection === 'local'"
               label="Reconnect"
               size="xs"
-              color="warning"
+              :color="display.colour"
               variant="soft"
               :loading="reconnecting"
               @click="reconnect"
+            />
+            <UButton
+              v-else
+              label="Check again"
+              icon="i-lucide-refresh-cw"
+              size="xs"
+              :color="display.colour"
+              variant="soft"
+              :loading="rechecking"
+              @click="recheck"
             />
           </template>
         </UAlert>

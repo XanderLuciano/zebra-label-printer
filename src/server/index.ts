@@ -69,6 +69,7 @@ import {
 } from './handlers/template-routes'
 import { closeDb, getDb } from '../db/database'
 import { PrinterRegistry, isUnresolved } from '../printer-registry'
+import { PrinterHealthMonitor } from '../printer-health'
 import { seedBuiltinTemplates } from '../db/template-seed'
 import { printJobs } from '../db/schema'
 import { eq } from 'drizzle-orm'
@@ -95,6 +96,13 @@ export class WebhookServer {
    */
   private printer: Printer | null = null
   private registry: PrinterRegistry = new PrinterRegistry()
+  /**
+   * Watches for printers being plugged in and unplugged.
+   *
+   * Nothing else does: the queue processor only checks a printer when there is
+   * work for it, so an idle server never noticed a disconnect.
+   */
+  private health: PrinterHealthMonitor = new PrinterHealthMonitor()
   private queue: PrintQueue | null = null
   private config: Required<WebhookConfig>
   private routes: RouteTable
@@ -138,7 +146,7 @@ export class WebhookServer {
     // /api/jobs/:id and /api/jobs/:id/cancel are matched by prefix below
 
     // Debug
-    get.set('/api/debug', debugHandler(apiKey, getQueue))
+    get.set('/api/debug', debugHandler(apiKey, getQueue, () => this.health))
 
     // Settings
     get.set('/api/settings', settingsGetHandler(apiKey))
@@ -372,6 +380,10 @@ export class WebhookServer {
     this.queue = new PrintQueue(this.registry)
     this.queue.start()
 
+    // Watch for printers coming and going, recording the transitions so
+    // printer_events is a real connectivity history.
+    this.health.start()
+
     // Offer the built-in example templates once, so a fresh install has
     // something to print from. Deleting or editing one is respected.
     try {
@@ -529,6 +541,8 @@ export class WebhookServer {
         console.log('  Raw TCP server stopped')
       })
     }
+
+    this.health.stop()
 
     if (this.queue) {
       this.queue.stop()

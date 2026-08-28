@@ -1,16 +1,49 @@
 <script setup lang="ts">
 const api = useApi();
 // Prints go to whichever printer is selected in Settings, server or USB-attached.
-const { printer: activePrinter, printText, printLabel, load: loadPrinters } = usePrintTarget();
+const { printer: activePrinter, printText, printLabel } = usePrintTarget();
+// Polls, so a printer unplugged on the server shows up here without a reload.
+usePrinters().watchWhileMounted();
+
+/**
+ * The printer badge. An unplugged printer is called out as such rather than
+ * lumped in with "unavailable", since the fix is different: go and check the cable.
+ */
+const badgeLabel = computed(() => {
+  const p = activePrinter.value;
+  if (!p) return 'No printer set up';
+  const suffix = {
+    ready: '',
+    unplugged: ' — unplugged',
+    offline: ' — stopped',
+    missing: ' — missing',
+    unknown: ' — state unknown',
+  }[p.health] ?? '';
+  return `${p.name} · ${p.labelSize.name}${suffix}`;
+});
+
+const badgeColour = computed(() => {
+  const p = activePrinter.value;
+  if (!p) return 'warning';
+  if (p.health === 'unplugged' || p.health === 'missing') return 'error';
+  if (p.health !== 'ready') return 'warning';
+  return p.connection === 'local' ? 'info' : 'neutral';
+});
+
+const badgeIcon = computed(() => {
+  const p = activePrinter.value;
+  if (p && p.health !== 'ready') return 'i-lucide-unplug';
+  return p?.connection === 'local' ? 'i-lucide-usb' : 'i-lucide-server';
+});
 
 const { data: health, refresh: refreshHealth } = useAsyncData('health', () => api.getHealth());
 const { data: debug } = useAsyncData('debug', () => api.getDebug());
 const { data: stats, refresh: refreshStats } = useAsyncData('stats', () => api.getJobStats());
 
-// Poll health + stats every 5 seconds
+// Poll health + stats every 5 seconds. The printer list polls separately, on a
+// slower interval, since a presence check shells out to CUPS.
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 onMounted(() => {
-  loadPrinters();
   pollInterval = setInterval(() => {
     refreshHealth();
     refreshStats();
@@ -340,14 +373,12 @@ const formatUptime = (s: number) => {
       <h1 class="text-2xl font-bold">Dashboard</h1>
       <!-- Which printer prints from this browser go to, and at what size -->
       <UBadge
-        :color="!activePrinter ? 'warning' : activePrinter.ready ? (activePrinter.connection === 'local' ? 'info' : 'neutral') : 'warning'"
+        :color="badgeColour"
         variant="subtle"
-        :icon="activePrinter?.connection === 'local' ? 'i-lucide-usb' : 'i-lucide-server'"
-        :to="!activePrinter ? '/settings' : undefined"
+        :icon="badgeIcon"
+        :to="activePrinter?.ready ? undefined : '/settings'"
       >
-        {{ activePrinter
-          ? `${activePrinter.name} · ${activePrinter.labelSize.name}${activePrinter.ready ? '' : ' — unavailable'}`
-          : 'No printer set up' }}
+        {{ badgeLabel }}
       </UBadge>
     </div>
 

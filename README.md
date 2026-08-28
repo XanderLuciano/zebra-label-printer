@@ -373,6 +373,29 @@ Prints from the API go to the printer named by `printerId`, or to the default pr
 named. `POST /api/printers/:id/default` sets that default, which is also what raw TCP (port 9100)
 prints use.
 
+### Unplugged printers
+
+CUPS doesn't watch USB — it only notices a missing printer when it next tries to print — so a
+queue can report itself idle and ready with the cable out. To avoid that, each printer is also
+checked against the devices CUPS can actually see, and reported as one of:
+
+| State | Meaning |
+|-------|---------|
+| **Ready** | Queue is up and the printer is attached |
+| **Unplugged** | The device is gone. Check the cable and that it's powered on |
+| **Stopped** | The printer is attached but CUPS has stopped or is rejecting the queue |
+| **Missing** | The CUPS queue itself no longer exists |
+| **Unknown** | Couldn't tell — a networked printer, or `lpinfo` unavailable on this host |
+
+Unplugging shows up in the web UI within about 15 seconds without a page reload, and is written to
+the printer event log (visible on the Debug page) so you can see when a printer dropped and came
+back. No print has to be attempted for this to be noticed.
+
+This relies on `lpinfo`, part of the CUPS client tools. Where it's missing or needs elevated
+privileges, printers report **Unknown** rather than being wrongly marked unplugged, and everything
+else keeps working. Networked printers are always Unknown: absence from local device enumeration
+says nothing about whether they're reachable.
+
 ### Standard sizes
 
 These are offered when configuring a printer, alongside custom dimensions in inches:
