@@ -4,10 +4,35 @@
  * Uses the GitHub Tags API. Results are cached in settings to avoid rate-limiting.
  */
 
+import fs from 'fs'
+import path from 'path'
 import { getSetting, setSetting } from './db/settings-repo'
 
 const GITHUB_API = 'https://api.github.com/repos/XanderLuciano/zebra-label-printer/tags'
-const CURRENT_VERSION = '0.1.0' // Keep in sync with package.json
+
+/**
+ * The running version, read from package.json.
+ *
+ * This used to be a hardcoded string with a "keep in sync with package.json"
+ * comment, and it had already drifted — it said 0.1.0 while the package said
+ * 0.1.1, so the update check reported an update was available on an up-to-date
+ * install. Reading the real thing removes the chance of that happening again.
+ *
+ * `__dirname` is `<root>/src` under tsx and `<root>/dist` once compiled, so the
+ * package root is one level up in both cases.
+ */
+function readCurrentVersion(): string {
+  try {
+    const pkgPath = path.join(__dirname, '..', 'package.json')
+    return JSON.parse(fs.readFileSync(pkgPath, 'utf-8')).version || '0.0.0'
+  } catch {
+    // Running from somewhere the package metadata isn't reachable. Report an
+    // unknown-but-oldest version rather than claiming to be up to date.
+    return '0.0.0'
+  }
+}
+
+const CURRENT_VERSION = readCurrentVersion()
 
 export interface UpdateInfo {
   current: string

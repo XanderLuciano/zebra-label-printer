@@ -453,20 +453,30 @@ and fall back to the configuration of the printer the job went to, flagged in th
 
 When tagging a new release:
 
-1. **Update version** in `package.json` and `web/package.json`
-2. **Run the build** — `bash build.sh` — verify it completes clean
-3. **Tag and push:**
+1. **Update version** in `package.json` and `web/package.json`, and run `npm install` in
+   both so the lockfiles follow. **The tag and the package version must match** — v0.1.0
+   through v0.3.0 were all tagged while `package.json` still said `0.1.0`, so nothing on
+   disk indicated which release was running.
+2. **Add a changelog row below**, before tagging rather than after.
+3. **Run the build** — `bash build.sh` — verify it completes clean
+4. **Tag and push:**
    ```bash
-   VER=v0.2.0
+   VER=v0.4.0
    git tag -a $VER -m "$VER — <one-line summary>"
    git push --tags
    ```
-4. **Verify** the release at https://github.com/XanderLuciano/zebra-label-printer/releases
-5. **No README changes needed** — install URLs use `main` branch, always current
+5. **Verify** the release at https://github.com/XanderLuciano/zebra-label-printer/releases
+6. **No README changes needed** — install URLs use `main` branch, always current
+
+The version the running server reports comes from `package.json`, read at runtime by
+`src/updater.ts`. It used to be a hardcoded constant there, which had already drifted out of
+step and made an up-to-date install report that an update was available.
 
 ### Changelog
 
 | Version | Date | Changes |
 |---------|------|---------|
-| unreleased | — | Per-printer configuration: `printers` table, `PrinterRegistry`, printer CRUD API, `printerId` on print requests, per-printer queueing, multi-device WebUSB, unified printer list in Settings. Hot-plug detection via `lpinfo` device enumeration, with a health monitor recording connect/disconnect transitions. Fixed timestamp defaults storing a string literal instead of a date (migration `0004`) |
+| v0.4.0 | 2026-08-28 | Per-printer configuration: `printers` table, `PrinterRegistry`, printer CRUD API, `printerId` on print requests, per-printer queueing, multi-device WebUSB, unified printer list in Settings. Hot-plug detection via `lpinfo` device enumeration, with a health monitor recording connect/disconnect transitions. Fixed timestamp defaults storing a string literal instead of a date (migration `0004`). CI now runs the whole test suite and covers the web app |
+| v0.3.0 | 2026-04-28 | Not recorded at the time — see `git log v0.2.0..v0.3.0` |
+| v0.2.0 | 2026-04-27 | Not recorded at the time — see `git log v0.1.0..v0.2.0` |
 | v0.1.0 | 2026-04-27 | Initial release: ZPL builder, job queue, Nuxt 4 web UI, serial printing, label size management, Docker, one-command install |

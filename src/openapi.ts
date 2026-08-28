@@ -8,7 +8,7 @@ export const OPENAPI_SPEC = {
   openapi: '3.1.0',
   info: {
     title: 'Zebra Label Printer API',
-    version: '0.1.1',
+    version: '0.4.0',
     description:
       'Network webhook API for the Zebra GK420d label printer. ' +
       'Print text labels, barcodes (1D + 2D/QR), raw ZPL, or compose ' +
@@ -1841,8 +1841,8 @@ export const OPENAPI_SPEC = {
       VersionInfo: {
         type: 'object',
         properties: {
-          current: { type: 'string', example: '0.1.1' },
-          latest: { type: ['string', 'null'], example: '0.1.2' },
+          current: { type: 'string', example: '0.4.0' },
+          latest: { type: ['string', 'null'], example: '0.4.1' },
           updateAvailable: { type: 'boolean' },
           checkedAt: { type: ['string', 'null'] },
           error: { type: ['string', 'null'] },
