@@ -9,8 +9,13 @@ on:
 permissions:
   contents: read
 
+# Two jobs rather than one so a frontend failure is not reported as a backend
+# failure, and so they run in parallel. The web app was previously not covered at
+# all: CI installed only the root package, so a broken frontend could merge with a
+# green tick.
 jobs:
-  test:
+  backend:
+    name: Backend
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -20,12 +25,52 @@ jobs:
         with:
           node-version: '24'
           cache: 'npm'
+          cache-dependency-path: package-lock.json
 
       - name: Install dependencies
         run: npm ci
 
+      - name: Lint
+        run: npm run lint
+
       - name: Build
         run: npm run build
 
+      # Some tests import composables from web/app/. They no longer need Nuxt's
+      # generated tsconfigs to be present — see web/app/tsconfig.json — so this
+      # job deliberately does not install the web package.
       - name: Run tests
         run: npm test
+
+  web:
+    name: Web UI
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: web
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: 'npm'
+          cache-dependency-path: web/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      # Generates .nuxt/, which both the lint config and the typecheck project
+      # are built from. Without it those steps have nothing to work against.
+      - name: Prepare Nuxt
+        run: npx nuxt prepare
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build

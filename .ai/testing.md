@@ -60,6 +60,22 @@ When a migration rebuilds a table (SQLite can't `ALTER COLUMN`), test it against
 staged at the *previous* migration and filled with data, then assert row counts, recovered
 values, `foreign_key_check`, and `integrity_check`. Re-running the migrator must be a no-op.
 
+## Tests That Import From `web/`
+
+Four suites (`zpl-fonts`, `template-text`, `rotation-geometry`, `template-seed`) import
+composables from `web/app/composables/`. Vite resolves the nearest tsconfig for every file it
+transforms, so those imports depend on `web/app/tsconfig.json` existing.
+
+Do not delete that file. Without it the nearest config is `web/tsconfig.json`, which
+`references` configs Nuxt generates into `web/.nuxt/` on dev or build. Those are not committed,
+so on a clean checkout the references fail to resolve and all four suites fail to transform —
+while passing locally, because `web/.nuxt/` is left over from the last dev run. That divergence
+hid the failure: CI ran 172 tests and reported green on a suite of 437.
+
+**When a test failure reproduces in CI but not locally, try a fresh clone rather than trusting
+the working tree.** `git worktree add` is not enough on its own — it also lacks generated files,
+which is a different flavour of the same trap.
+
 ## Integration Test Isolation
 
 Database tests use table-level cleanup between tests — `DELETE FROM` all tables rather than deleting/recreating the file. This is fast and avoids module caching issues with the singleton DB connection.

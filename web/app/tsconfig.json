@@ -1,0 +1,24 @@
+{
+  // Transform settings for tools that read a tsconfig per file, rather than
+  // going through the Nuxt project at ../tsconfig.json.
+  //
+  // Several backend tests import composables from this directory (font metrics,
+  // rotation geometry, template resolution). Vite resolves the nearest tsconfig
+  // for each file it transforms, and without this the nearest one is
+  // ../tsconfig.json — which `references` configs Nuxt generates into ../.nuxt/
+  // on dev or build. Those are not committed, so on a clean checkout the
+  // references cannot be resolved and every test importing from here fails to
+  // transform at all. That is invisible locally, because ../.nuxt/ is left over
+  // from the last dev run, and it made CI silently skip those test files.
+  //
+  // Vitest strips types without checking them, so only the handful of options
+  // esbuild actually reads matter here. Nuxt's own typecheck, lint, and build
+  // continue to use ../tsconfig.json and are unaffected by this file.
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "useDefineForClassFields": true,
+    "strict": true
+  }
+}
