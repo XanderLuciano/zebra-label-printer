@@ -9,7 +9,9 @@
 
 `zebra-label-printer` is a TypeScript library and HTTP microservice for Zebra GK420d (and compatible ZPL) label printers. It handles printer discovery, label composition (text, 1D/2D barcodes, QR codes, lines, boxes), and exposes a REST webhook so any device on the network can print labels.
 
-**Status**: All core features implemented. Zod validation on all endpoints. OpenAPI 3.1 docs with Swagger UI. Global CLI available.
+**Status**: All core features implemented. Multiple printers, each with its own label stock and
+media configuration — server-side (CUPS) and browser-attached (WebUSB) in one list. Zod validation
+on all endpoints. OpenAPI 3.1 docs with Swagger UI. Global CLI available.
 
 ## Tech Stack
 
@@ -42,9 +44,11 @@ src/
   db/                   → SQLite persistence layer
     database.ts         → getDb() singleton, WAL mode, auto-migrations
     print-job-repo.ts   → CRUD for print_jobs and job_logs tables
+    printer-repo.ts     → CRUD for configured printers + their per-printer media config
     settings-repo.ts    → Key/value settings store + printer events
     template-repo.ts    → CRUD for label_templates (JSON blob + mirrored columns)
     template-seed.ts    → Built-in example templates + one-time idempotent seeding
+  printer-registry.ts   → PrinterRegistry: printer id → live connection, geometry resolution
   queue.ts              → PrintQueue: persistent job queue with background processor
   webhook.ts            → Thin re-export + standalone entry point
   server/               → Modular HTTP server (split from webhook.ts)
@@ -52,8 +56,9 @@ src/
     helpers.ts          → json(), html(), readBody(), parseJson(), validate(), checkAuth()
     router.ts           → Route table types, findHandler(), sendNotFound(), printRoutes()
     handlers/
-      get-routes.ts     → GET handlers: health, printers, OpenAPI spec, Swagger UI, label size
+      get-routes.ts     → GET handlers: health, discovery, OpenAPI spec, Swagger UI, label size
       post-routes.ts    → POST handlers: text, barcode, QR, raw ZPL, composed label, job result
+      printer-registry-routes.ts → Printer CRUD: configure printers and their label stock
       printer-routes.ts → POST handlers: media configuration (^PW/^ML/^MN) + calibration (~JC)
       template-routes.ts→ Template CRUD + /api/render/zpl (build ZPL without printing)
 dist/                   → Compiled output (gitignored, shipped in npm package)
@@ -71,16 +76,18 @@ web/                    → Nuxt 4 Web UI (separate package)
       history.vue       → Print history: filterable job table + per-job label previews
       queue.vue         → Queue: job list + detail panel + event log
       debug.vue         → Debug: printer, queue, DB, server diagnostics
-      settings.vue      → Settings: print target, local USB printer, label size, printer media
+      settings.vue      → Settings: printers (via PrinterManager), queue, security, updates
     components/
       TemplateCanvas.vue→ Interactive designer surface (SVG, drag, rotation-aware)
       LabelPreview.vue  → Read-only SVG label preview (history, dashboard)
+      PrinterManager.vue→ Pick a printer, then configure that printer's label stock and media
     composables/
       useApi.ts         → API client wrapping $fetch with typed methods
       useTemplateEngine.ts → Template model, resolveTemplate(), ZPL rotation geometry
       useZplFonts.ts       → Measured ZPL font metrics (advance widths, cap heights, magnification)
-      useLocalPrinter.ts   → WebUSB connection to a directly attached Zebra printer
-      usePrintTarget.ts    → server-vs-local preference + unified print/config dispatch
+      useLocalPrinter.ts   → WebUSB connections to directly attached printers, keyed by device
+      usePrinters.ts       → The printer list: server printers + this browser's USB printers
+      usePrintTarget.ts    → Print dispatch to the selected printer (+ config/calibrate)
     types/
       webusb.d.ts       → Ambient WebUSB declarations (not in the TS DOM lib)
 package.json            → npm metadata, bin entry, scripts
@@ -130,35 +137,106 @@ AI-MAP.md               → This file
 
 ```
 Nuxt Web UI (web/) ──→ HTTP API (server/index.ts)
-                             │
-                             ├── PrintQueue (queue.ts)
-                             │     ├── Immediate print attempt
-                             │     ├── Fallback: persist to SQLite
-                             │     └── Background processor
-                             │
-                             ├── Handlers (server/handlers/)
-                             │     ├── GET: health, jobs, debug, settings
-                             │     └── POST: print operations → queue
-                             │
-                             ├── Printer (printer.ts)
-                             │     └── CUPS lp command → USB printer
-                             │
-                             └── Database (db/)
-                                   ├── print_jobs + job_logs
-                                   ├── settings (key/value)
-                                   └── printer_events
+      │                      │
+      │                      ├── PrintQueue (queue.ts)
+      │                      │     ├── Immediate print attempt
+      │                      │     ├── Fallback: persist to SQLite
+      │                      │     └── Background processor (scans per printer)
+      │                      │
+      │                      ├── PrinterRegistry (printer-registry.ts)
+      │                      │     ├── printer id → Printer connection (cached)
+      │                      │     └── resolveJobLabelSize(): which geometry to render for
+      │                      │
+      │                      ├── Handlers (server/handlers/)
+      │                      │     ├── GET:  health, printers, jobs, debug, settings
+      │                      │     └── POST: printer CRUD, print operations → queue
+      │                      │
+      │                      ├── Printer (printer.ts)
+      │                      │     └── CUPS lp command → USB printer
+      │                      │
+      │                      └── Database (db/)
+      │                            ├── printers  ← per-printer media config
+      │                            ├── print_jobs (+ printer_id) + job_logs
+      │                            ├── settings (key/value)
+      │                            └── printer_events
+      │
+      └── WebUSB ──→ USB printer attached to the browser's own machine
+            (config in localStorage; ZPL still generated and recorded server-side)
 ```
 
-**Dependency flow**: Nuxt UI → HTTP API → PrintQueue → Printer → CUPS → Device.  
-**Persistence**: All jobs, logs, settings, and events stored in SQLite (WAL mode).  
-**Reliability**: Jobs queue automatically if printer offline; processor retries on reconnect.
+**Dependency flow**: Nuxt UI → HTTP API → PrintQueue → PrinterRegistry → Printer → CUPS → Device.  
+**Persistence**: All printers, jobs, logs, settings, and events stored in SQLite (WAL mode).  
+**Reliability**: Jobs queue automatically if their printer is offline; the processor retries on
+reconnect, and a job waiting on one printer doesn't block jobs bound for another.
+
+### Per-printer configuration
+
+Label size, DPI, and media tracking belong to a **printer**, not to the server. They used to be
+one global setting, which could only ever describe one printer: with a local 2×1" printer and a
+server 4×6" printer set up at once, configuring either silently redefined the geometry for both,
+and nothing checked that the printer you were about to print on was loaded with that stock.
+
+Three distinct things are all called "printer". Keeping them apart matters:
+
+| Type | Meaning | Lives in |
+|------|---------|----------|
+| `PrinterInfo` | A printer *discovered* from CUPS. Transient. | `discovery.ts` |
+| `PrinterProfile` | A printer *configured* by a user, with its own media config. | `printers` table, or browser localStorage |
+| `Printer` | An open *connection* used to send ZPL. | `printer.ts`, cached by `PrinterRegistry` |
+
+Where a profile is stored depends on who can reach the printer:
+
+- **Server printers** live in the `printers` table and are visible to every client.
+  `PrinterRegistry.sync()` adopts discovered CUPS queues at startup, so an existing install comes
+  up already configured. Re-adoption is idempotent and never overwrites saved config.
+- **Local printers** are USB devices reached over WebUSB. That pairing is granted to one browser
+  profile on one machine and can't be shared, so those profiles live in `localStorage` keyed by a
+  stable `usb-{vendor}-{product}-{serial}` device id, with profile ids prefixed `local_`.
+
+Both use the same `PrinterProfile` shape, so the UI and the print path don't branch on kind. Only
+the storage location and the final transport differ.
+
+**Starting with no printer is valid.** Someone printing only to a browser-attached USB printer has
+no CUPS queue on the host, so `WebhookServer.start()` returns `Printer | null` and `Handler`
+receives `Printer | null`. Handlers that need one answer 503.
+
+### Which label size a job is rendered for
+
+`resolveJobLabelSize()` in `printer-registry.ts` is the single rule. Most specific first:
+
+1. An explicit `labelSize` on the request — how a browser-attached printer supplies its geometry,
+   since the server has nothing to look up for it.
+2. The named printer's saved configuration.
+3. The default printer's saved configuration.
+4. The legacy global `label_size` setting, for installs with no printers configured and for
+   library/CLI callers with no registry.
+
+Whatever it returns is frozen onto the job (`print_jobs.label_*`), so a queued job still prints at
+the size it was composed for even if its printer is reconfigured first. Don't add a second copy of
+this logic.
+
+### Per-printer queueing
+
+`print_jobs.printer_id` records the printer a job is bound for. It's deliberately **not** a foreign
+key: browser-owned printers have no server row, and deleting a printer must not delete its history.
+
+`PrintQueue.processNext()` walks a window of pending jobs (`PENDING_SCAN_LIMIT`) rather than only
+the head, resolving each job's printer through the registry. Jobs whose printer can't be resolved
+are **skipped, never reassigned** — printing a job on a printer it wasn't rendered for would put it
+on the wrong label stock.
 
 ## API Routes
 
 | Method | Path | Handler | Schema |
 |--------|------|---------|--------|
 | GET | `/api/health` | `healthHandler` | — |
-| GET | `/api/printers` | `printersHandler()` | — |
+| GET | `/api/printers` | `printersListHandler()` | — |
+| POST | `/api/printers` | `printerCreateHandler()` | `printerCreateSchema` |
+| GET | `/api/printers/discovered` | `printersDiscoveredHandler()` | — |
+| GET | `/api/printers/:id` | `printerGetHandler()` | — |
+| PUT | `/api/printers/:id` | `printerUpdateHandler()` | `printerUpdateSchema` |
+| DELETE | `/api/printers/:id` | `printerDeleteHandler()` | — |
+| POST | `/api/printers/:id/default` | `printerSetDefaultHandler()` | — |
 | GET | `/api/docs` | `docsHandler` | — |
 | GET | `/api/docs/openapi.json` | `openApiHandler` | — |
 | GET | `/api/jobs` | `jobsListHandler()` | — |
@@ -181,17 +259,30 @@ Nuxt Web UI (web/) ──→ HTTP API (server/index.ts)
 | POST | `/api/print/serial` | `printSerialHandler()` | `serialLabelSchema` |
 | POST | `/api/render/zpl` | `renderZplHandler()` | `renderZplSchema` |
 
-### Print targets
+### Choosing a printer on a print request
 
-Every print endpoint takes an optional `target`:
+Every print endpoint accepts:
 
-- **`server`** (default) — the job goes through `PrintQueue` to CUPS on the host.
-- **`local`** — the job is persisted with its label-size snapshot and the generated
-  ZPL is returned instead of printed. The browser sends it to a USB printer over
-  WebUSB, then finalizes the job with `POST /api/jobs/:id/result`.
+| Field | Meaning |
+|-------|---------|
+| `printerId` | Which printer to use. Omit for the default. **Prefer this.** |
+| `labelSize` | `{widthDots, heightDots, dpi?}` overriding the printer's saved geometry |
+| `printerName` | Name to record on the job, for printers the server can't name itself |
+| `target` | `server` \| `local` — the older, coarser choice; still honoured |
 
-Both paths produce identical job records, so print history and reprints don't
-care which printer the label came out of.
+A `printerId` beginning `local_` is decisive on its own: only the browser holding that WebUSB handle
+can print to it, so the ZPL comes back to the caller whatever `target` says. Those requests must
+include `labelSize`, because the server has no stored config for a browser's printer.
+
+- **Server printer** — the job goes through `PrintQueue` to CUPS on the host, rendered at that
+  printer's saved geometry.
+- **Browser printer** — the job is persisted with its label-size snapshot and the generated ZPL is
+  returned instead of printed. The browser sends it over WebUSB, then finalizes the job with
+  `POST /api/jobs/:id/result`.
+
+Both paths produce identical job records, so print history and reprints don't care which printer the
+label came out of. A `printerId` that doesn't match a configured printer is a **404** rather than a
+silent fallback — the point of naming a printer is that the label lands on the right stock.
 
 ## Adding a New Endpoint
 
@@ -205,18 +296,21 @@ care which printer the label came out of.
 
 - **Connection**: USB, detected by CUPS as `ZTC-GK420d`. Browsers can also reach a
   directly attached printer over WebUSB (`useLocalPrinter`), bypassing CUPS.
-- **Label size**: default 3" × 5" (609 × 1015 dots at 203 DPI)
+- **Label size**: per printer, defaulting to 3" × 5" (609 × 1015 dots at 203 DPI)
+  for a newly registered printer. See "Per-printer configuration" above.
 - **ZPL**: Text labels print with the raw `-o raw` CUPS flag (bypasses CUPS filtering)
 - **No ink needed**: Thermal direct printing — the labels have heat-sensitive coating
 - **Discovery fallback**: If CUPS is unavailable, direct USB discovery can be added to `src/discovery.ts`
 
 ### Media configuration (`^PW` / `^ML` / `^MN`)
 
-Changing the label size in this app is not enough on its own — the printer keeps
-its own stored print width and media settings, which is how a size change ends up
-producing clipped, offset, or blank-fed labels. `mediaConfigZpl()` in `src/zpl.ts`
-generates the commands that fix that, and `PUT /api/label-size` sends them
-automatically.
+Changing a printer's label size in this app is not enough on its own — the printer
+keeps its own stored print width and media settings, which is how a size change ends
+up producing clipped, offset, or blank-fed labels. `mediaConfigZpl()` in `src/zpl.ts`
+generates the commands that fix that. Saving a size in Settings sends them to that
+printer automatically; `POST /api/printer/configure` with a `printerId` does it on
+demand, and an otherwise-empty body means "apply this printer's own saved config",
+which is what you want after swapping stock or moving the printer to another machine.
 
 - `^PW` print width, `^ML` maximum label length (set 1" past the label so the gap
   search can reach the next gap), `^LH0,0` origin reset, `^MN` media tracking,
@@ -266,11 +360,11 @@ dimensions instead.
 ### Print history and label size
 
 `print_jobs` carries `label_width_dots`, `label_height_dots`, and `label_dpi`,
-frozen when the job is created. History renders each job at its recorded size
-rather than the current setting — otherwise switching label stock silently
-redraws every past job at the new dimensions. Rows created before migration
-`0002_print_job_label_size` have nulls and fall back to the current size, flagged
-in the UI.
+frozen when the job is created, plus `printer_id` for which printer it went to.
+History renders each job at its recorded size rather than the current setting —
+otherwise switching label stock silently redraws every past job at the new
+dimensions. Rows created before migration `0002_print_job_label_size` have nulls
+and fall back to the configuration of the printer the job went to, flagged in the UI.
 
 ## Release Checklist
 
@@ -291,4 +385,5 @@ When tagging a new release:
 
 | Version | Date | Changes |
 |---------|------|---------|
+| unreleased | — | Per-printer configuration: `printers` table, `PrinterRegistry`, printer CRUD API, `printerId` on print requests, per-printer queueing, multi-device WebUSB, unified printer list in Settings |
 | v0.1.0 | 2026-04-27 | Initial release: ZPL builder, job queue, Nuxt 4 web UI, serial printing, label size management, Docker, one-command install |

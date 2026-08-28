@@ -22,6 +22,13 @@
       "when": 1787012667947,
       "tag": "0002_print_job_label_size",
       "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1787940588398,
+      "tag": "0003_printers_per_printer_config",
+      "breakpoints": true
     }
   ]
 }

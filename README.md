@@ -32,7 +32,10 @@ Everything runs on **port 3420**: web dashboard at `/`, API at `/api/*`, docs at
 - **Persistent job queue** — SQLite-backed, survives reboots, auto-retries when printer reconnects
 - **Auto-recovery** — CUPS auto-re-enable on USB disconnect/reconnect
 - **Serial number printing** — batch print with auto-incrementing `{serial}` placeholder
-- **Label size management** — 6 standard sizes + custom, recent sizes tracked for hot-swapping
+- **Multiple printers** — each with its own label stock, DPI, and media settings, so switching
+  printers doesn't mean reconfiguring one
+- **Print from any browser** — a USB printer plugged into your own machine works over WebUSB
+  without installing a second server, and shows up in the same printer list
 - **Zod validation** — all endpoints validated, structured 400s with field-level errors
 - **OpenAPI docs** — interactive Swagger UI at `/api/docs`
 - **ZPL builder** — fluent TypeScript API for text, 8 barcode types, QR codes, Data Matrix
@@ -76,7 +79,13 @@ For full interactive docs, start the server and open **http://localhost:3420/api
 | Method | Endpoint | Description |
 |--------|----------|-------------|
 | GET | `/api/health` | Health check |
-| GET | `/api/printers` | List available printers |
+| GET | `/api/printers` | Configured printers + unconfigured CUPS queues |
+| POST | `/api/printers` | Configure a printer |
+| GET | `/api/printers/discovered` | Raw CUPS discovery |
+| GET | `/api/printers/:id` | One configured printer |
+| PUT | `/api/printers/:id` | Update a printer's name or label stock |
+| DELETE | `/api/printers/:id` | Remove a printer (its print history is kept) |
+| POST | `/api/printers/:id/default` | Use this printer when a request names none |
 | GET | `/api/docs` | Swagger UI |
 | GET | `/api/docs/openapi.json` | OpenAPI 3.1 spec |
 | GET | `/api/jobs` | List print jobs (filterable by status) |
@@ -86,8 +95,10 @@ For full interactive docs, start the server and open **http://localhost:3420/api
 | GET | `/api/debug` | System diagnostics (printer, queue, DB, server) |
 | GET | `/api/settings` | Get all settings |
 | PUT | `/api/settings` | Update settings |
-| GET | `/api/label-size` | Current label size + recent sizes + standard sizes |
-| PUT | `/api/label-size` | Set label dimensions |
+| POST | `/api/printer/configure` | Push media geometry to a printer (^PW/^ML/^MN) |
+| POST | `/api/printer/calibrate` | Run a media sensor calibration (~JC) |
+| GET | `/api/label-size` | Legacy global label size (superseded by per-printer config) |
+| PUT | `/api/label-size` | Legacy global label size |
 | POST | `/api/print/text` | Print text label |
 | POST | `/api/print/barcode` | Print barcode label |
 | POST | `/api/print/qr` | Print QR code label |
@@ -110,11 +121,27 @@ curl -X POST http://localhost:3420/api/print/barcode \
   -H "Content-Type: application/json" \
   -d '{"data": "INV-42069", "text": "Inventory Tag"}'
 
-# Get/set label size
-curl http://localhost:3420/api/label-size
-curl -X PUT http://localhost:3420/api/label-size \
+# List configured printers (and anything CUPS sees that isn't set up yet)
+curl http://localhost:3420/api/printers
+
+# Configure a printer with its own label stock
+curl -X POST http://localhost:3420/api/printers \
   -H "Content-Type: application/json" \
-  -d '{"widthDots": 609, "heightDots": 406, "name": "3×2\" Shipping"}'
+  -d '{"name": "Shipping desk", "cupsName": "ZTC-GK420d",
+       "labelSize": {"widthDots": 812, "heightDots": 1218, "name": "4x6\" shipping"}}'
+
+# Print on a specific printer, at that printer's configured size
+curl -X POST http://localhost:3420/api/print/text \
+  -H "Content-Type: application/json" \
+  -d '{"lines": ["Order 1234"], "printerId": "prn_m9x2k1_a7b3c9"}'
+
+# Change what stock a printer is loaded with, and push it to the hardware
+curl -X PUT http://localhost:3420/api/printers/prn_m9x2k1_a7b3c9 \
+  -H "Content-Type: application/json" \
+  -d '{"labelSize": {"widthDots": 609, "heightDots": 406, "name": "3x2\""}}'
+curl -X POST http://localhost:3420/api/printer/configure \
+  -H "Content-Type: application/json" \
+  -d '{"printerId": "prn_m9x2k1_a7b3c9"}'
 
 # Print a part label (QR code + part info, 2x1" layout)
 curl -X POST http://localhost:3420/api/print/label \
@@ -320,9 +347,35 @@ All positions (`x`, `y`) are in **dots** at 203 DPI. The origin (0,0) is the top
 For a **2×1" label**: max X = 406, max Y = 203.  
 For a **4×6" label**: max X = 812, max Y = 1218.
 
-## Label Sizes
+## Printers and Label Sizes
 
-The API tracks the current label size and recently used sizes. Standard sizes are pre-loaded:
+Label stock, DPI, and media tracking belong to a **printer**, not to the server. Set up as many
+printers as you like and each keeps its own configuration, so switching between a 2×1" printer and a
+4×6" one doesn't mean re-entering dimensions and hoping the hardware agrees.
+
+Add printers under **Settings → Printer**. Two kinds show up in the same list:
+
+| Kind | Reached by | Configuration stored | Visible to |
+|------|-----------|----------------------|------------|
+| **Server** | the host process, via CUPS | the server's database | everyone using the server |
+| **Local** | your browser, over WebUSB | your browser | just you, on that machine |
+
+Server printers are adopted from CUPS automatically at startup, so an existing install comes up
+already configured. Local printers are for when the person printing isn't sitting at the machine
+running the server: plug a printer into your own computer, click **Connect USB printer**, and print
+to it without a second server install. Jobs are recorded in print history either way.
+
+Local USB printing needs a Chromium-based browser (Chrome or Edge) on HTTPS or localhost, and the
+printer must not be held exclusively by the OS — on Windows switch it to the WinUSB driver (Zadig);
+on macOS and Linux, remove it from CUPS if the connection is refused.
+
+Prints from the API go to the printer named by `printerId`, or to the default printer if none is
+named. `POST /api/printers/:id/default` sets that default, which is also what raw TCP (port 9100)
+prints use.
+
+### Standard sizes
+
+These are offered when configuring a printer, alongside custom dimensions in inches:
 
 | Name | Size (inches) | Dots (203 DPI) |
 |------|---------------|-----------------|
@@ -332,7 +385,13 @@ The API tracks the current label size and recently used sizes. Standard sizes ar
 | 3×5" (large) | 3 × 5 | 609 × 1015 |
 | 4×6" (shipping) | 4 × 6 | 812 × 1218 |
 
-Set a custom size with `PUT /api/label-size`. It'll be saved to the recent list for quick hot-swapping from the web UI.
+Saving a size also sends it to the printer as `^PW` / `^ML` / `^MN`. That step matters: the printer
+keeps its own stored print width and gap settings, so changing the size in software alone can still
+produce clipped, drifting, or blank-fed labels. Use **Apply & calibrate** after swapping stock so the
+gap sensor re-measures the new labels.
+
+Each job records the geometry it was rendered for, so print history shows what actually came out of
+the printer rather than redrawing old jobs at whatever size is configured now.
 
 ## Use as a Library
 
@@ -388,7 +447,8 @@ const result = await queue.submit('text', { lines: ['Hello'] }, () => zpl);
 ```
 src/              → TypeScript library + API server
   server/         → Modular HTTP server
-  db/             → SQLite persistence (jobs, logs, settings)
+  db/             → SQLite persistence (printers, jobs, logs, settings)
+  printer-registry.ts → Resolves a printer id to a connection and its label geometry
   queue.ts        → Persistent job queue with background processor
 web/              → Nuxt 4 web dashboard
 Dockerfile        → Docker image
@@ -409,4 +469,10 @@ lsusb | grep -i zebra  # Should show "Zebra Technologies GK420d"
 sudo lpadmin -p ZTC-GK420d -E -v "usb://Zebra%20Technologies/ZTC%20GK420d?serial=YOURSERIAL" -m raw
 ```
 
-Labels used: thermal direct labels (no ink needed). Default size: 3" × 5".
+Once CUPS can see it, the server registers it on startup and it appears under **Settings → Printer**.
+Set the label size it's loaded with there; each printer remembers its own.
+
+Labels used: thermal direct labels (no ink needed). A newly registered printer defaults to 3" × 5".
+
+The server starts fine with no printer attached — useful if everyone prints to their own USB printer
+from the browser instead.

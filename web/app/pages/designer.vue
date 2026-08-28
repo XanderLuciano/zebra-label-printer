@@ -21,9 +21,9 @@ import {
 
 const api = useApi()
 const toast = useToast()
-// Routes prints to the server queue or a local USB printer, per the
-// per-browser preference in Settings.
-const { printLabel, load: loadPrintTarget } = usePrintTarget()
+// Prints go to the printer selected in Settings, and are rendered for that
+// printer's own label size.
+const { printLabel, load: loadPrinters } = usePrintTarget()
 
 // Literal token example for help text (kept out of the template to avoid
 // the Vue compiler tripping on nested `{{ }}` delimiters).
@@ -498,7 +498,7 @@ watch([resolved, targetW, targetH], () => {
 watch(autoAccurate, (on) => { if (on) fetchAccurate() })
 
 onMounted(() => {
-  loadPrintTarget()
+  loadPrinters()
   refreshTemplateList()
 })
 </script>

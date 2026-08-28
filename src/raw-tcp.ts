@@ -27,14 +27,18 @@ interface PendingData {
  *
  * @param port - TCP port (default 9100 — standard Zebra network port)
  * @param host - Bind address (default '0.0.0.0')
+ * Jobs arrive without naming a printer, so they go to the configured default —
+ * the same behaviour as any other unrouted print request.
+ *
  * @param getQueue - Accessor for the active PrintQueue
- * @param printer - The active Printer instance
+ * @param getPrinter - Accessor for the default printer connection, used only when
+ *   there is no queue (library usage). May be null when nothing is configured.
  */
 export function startRawTcpServer(
   port: number,
   host: string,
   getQueue: () => PrintQueue | null,
-  printer: Printer
+  getPrinter: () => Printer | null
 ): ReturnType<typeof createServer> {
   const server = createServer((socket: Socket) => {
     const pending: PendingData = {
@@ -49,7 +53,7 @@ export function startRawTcpServer(
       if (flushTimer) clearTimeout(flushTimer)
       flushTimer = setTimeout(() => {
         flushTimer = null
-        flushAndPrint(pending, getQueue, printer, peer, socket)
+        flushAndPrint(pending, getQueue, getPrinter, peer, socket)
       }, FLUSH_TIMEOUT_MS)
     }
 
@@ -65,7 +69,7 @@ export function startRawTcpServer(
         flushTimer = null
       }
       if (pending.totalLength > 0) {
-        flushAndPrint(pending, getQueue, printer, peer, socket)
+        flushAndPrint(pending, getQueue, getPrinter, peer, socket)
       }
     })
 
@@ -89,7 +93,7 @@ export function startRawTcpServer(
 async function flushAndPrint(
   pending: PendingData,
   getQueue: () => PrintQueue | null,
-  printer: Printer,
+  getPrinter: () => Printer | null,
   peer: string,
   _socket: Socket
 ): Promise<void> {
@@ -106,12 +110,19 @@ async function flushAndPrint(
   if (queue) {
     await queue.submit('zpl', { zpl, source: 'tcp9100', peer }, () => zpl)
     console.log(`   TCP(9100): Queued ${zpl.length}b from ${peer}`)
+    return
+  }
+
+  const printer = getPrinter()
+  if (!printer) {
+    console.error(`   TCP(9100): Dropped ${zpl.length}b from ${peer} — no printer configured`)
+    return
+  }
+
+  const result = await printer.print(zpl)
+  if (result.success) {
+    console.log(`   TCP(9100): Printed ${zpl.length}b from ${peer} (Job: ${result.jobId})`)
   } else {
-    const result = await printer.print(zpl)
-    if (result.success) {
-      console.log(`   TCP(9100): Printed ${zpl.length}b from ${peer} (Job: ${result.jobId})`)
-    } else {
-      console.error(`   TCP(9100): Print failed for ${peer}: ${result.error}`)
-    }
+    console.error(`   TCP(9100): Print failed for ${peer}: ${result.error}`)
   }
 }

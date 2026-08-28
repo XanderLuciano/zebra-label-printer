@@ -1,6 +1,6 @@
 /** Type definitions for the Zebra Label Printer library */
 
-import type { MediaTracking } from './constants'
+import type { MediaTracking, PrinterConnection, PrinterTransport } from './constants'
 
 /** A discovered printer */
 export interface PrinterInfo {
@@ -156,10 +156,75 @@ export interface LabelSize {
   widthInches: number;
   /** Height in inches */
   heightInches: number;
-  /** Width in dots (at 203 DPI) */
+  /** Width in dots, at the owning printer's DPI */
   widthDots: number;
-  /** Height in dots (at 203 DPI) */
+  /** Height in dots, at the owning printer's DPI */
   heightDots: number;
   /** Human-readable name */
   name: string;
+}
+
+// ─── Printer profiles ────────────────────────────────────────────────────────
+
+/**
+ * The media configuration of one printer.
+ *
+ * This used to be a single global setting, which meant a local 2×1" printer and
+ * a server 4×6" printer couldn't both be set up at once — switching printers
+ * meant re-entering the label size and hoping the hardware agreed. Every
+ * printer now carries its own copy, and the fields are the same whether the
+ * printer is driven by this process or by a browser over WebUSB.
+ */
+export interface PrinterMediaConfig {
+  /** Label geometry loaded in this printer */
+  labelSize: LabelSize;
+  /** Print head resolution */
+  dpi: number;
+  /** How the printer finds the top of each label (ZPL ^MN) */
+  tracking: MediaTracking;
+  /** Black-mark offset in dots — only meaningful when tracking is 'mark' */
+  markOffset?: number;
+}
+
+/**
+ * A configured printer: its identity, how to reach it, and its media config.
+ *
+ * Server printers live in the `printers` table and are visible to every client.
+ * Local printers live in the browser that owns the USB device, keyed by
+ * `usbDeviceId`, because that pairing can't be shared. The shape is identical
+ * either way so the UI and the print pipeline don't branch on it.
+ */
+export interface PrinterProfile extends PrinterMediaConfig {
+  /** Stable id. Browser-owned printers are prefixed `local_`. */
+  id: string;
+  /** User-facing name */
+  name: string;
+  /** Who drives this printer */
+  connection: PrinterConnection;
+  /** How the bytes reach it */
+  transport: PrinterTransport;
+  /** CUPS queue name, for `transport: 'cups'` */
+  cupsName?: string | null;
+  /** Device URI (CUPS) or host:port (TCP) — display and matching */
+  deviceUri?: string | null;
+  /** WebUSB identity `vendor:product:serial`, for `transport: 'webusb'` */
+  usbDeviceId?: string | null;
+  /** Use this printer when a request doesn't name one */
+  isDefault: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** Fields accepted when creating or updating a server printer profile */
+export interface PrinterProfileInput {
+  name?: string;
+  transport?: PrinterTransport;
+  cupsName?: string | null;
+  deviceUri?: string | null;
+  usbDeviceId?: string | null;
+  labelSize?: LabelSize;
+  dpi?: number;
+  tracking?: MediaTracking;
+  markOffset?: number | null;
+  isDefault?: boolean;
 }

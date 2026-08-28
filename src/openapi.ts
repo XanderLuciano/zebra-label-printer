@@ -47,12 +47,17 @@ export const OPENAPI_SPEC = {
     },
     '/api/printers': {
       get: {
-        summary: 'List available printers',
+        summary: 'List configured printers',
         operationId: 'listPrinters',
-        tags: ['Discovery'],
+        tags: ['Printers'],
+        description:
+          'Configured printers, each with its own media configuration, plus the ' +
+          'CUPS queues that are visible but not configured yet. ' +
+          'Browser-attached (WebUSB) printers are not listed here: that pairing ' +
+          'belongs to a single browser, so those profiles are stored client-side.',
         responses: {
           '200': {
-            description: 'Available printers',
+            description: 'Configured printers and unconfigured candidates',
             content: {
               'application/json': {
                 schema: {
@@ -60,24 +65,170 @@ export const OPENAPI_SPEC = {
                   properties: {
                     printers: {
                       type: 'array',
-                      items: {
-                        type: 'object',
-                        properties: {
-                          name: { type: 'string', example: 'ZTC-GK420d' },
-                          uri: { type: 'string' },
-                          model: { type: 'string' },
-                          status: { type: 'string', enum: ['idle', 'printing', 'unavailable', 'unknown'] },
-                          accepting: { type: 'boolean' },
-                          serial: { type: 'string' },
-                          isZebra: { type: 'boolean' }
-                        }
-                      }
+                      description: 'Configured printers, default first.',
+                      items: { $ref: '#/components/schemas/PrinterProfileStatus' }
+                    },
+                    discovered: {
+                      type: 'array',
+                      description: 'CUPS queues that are not configured yet — candidates to add.',
+                      items: { $ref: '#/components/schemas/DiscoveredPrinter' }
                     }
                   }
                 }
               }
             }
           }
+        }
+      },
+      post: {
+        summary: 'Configure a printer',
+        operationId: 'createPrinter',
+        tags: ['Printers'],
+        description:
+          'Register a printer this server can drive. Media configuration is optional — ' +
+          'anything omitted is seeded from the current defaults, so adopting a discovered ' +
+          'printer needs little more than its CUPS queue name.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/PrinterProfileInput' },
+              examples: {
+                adopt: {
+                  summary: 'Adopt a discovered CUPS printer',
+                  value: { name: 'Warehouse GK420d', cupsName: 'ZTC-GK420d' }
+                },
+                configured: {
+                  summary: 'Register with its own label stock',
+                  value: {
+                    name: 'Bench 2×1',
+                    cupsName: 'ZTC-GK420d-2',
+                    labelSize: { widthDots: 406, heightDots: 203, name: '2×1" (small)' },
+                    tracking: 'gap',
+                    isDefault: true
+                  }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          '201': { $ref: '#/components/responses/PrinterResponse' },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '409': {
+            description: 'That CUPS queue is already configured',
+            content: {
+              'application/json': {
+                schema: { type: 'object', properties: { error: { type: 'string' } } }
+              }
+            }
+          }
+        }
+      }
+    },
+    '/api/printers/discovered': {
+      get: {
+        summary: 'List printers CUPS can see',
+        operationId: 'listDiscoveredPrinters',
+        tags: ['Printers'],
+        description:
+          'Raw discovery view, configured or not. Returns an empty list rather than an ' +
+          'error when CUPS is unavailable.',
+        responses: {
+          '200': {
+            description: 'Discovered printers',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    printers: {
+                      type: 'array',
+                      items: { $ref: '#/components/schemas/DiscoveredPrinter' }
+                    },
+                    error: { type: 'string', description: 'Why discovery came back empty, if it did.' }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    '/api/printers/{id}': {
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string' } }
+      ],
+      get: {
+        summary: 'Get a configured printer',
+        operationId: 'getPrinter',
+        tags: ['Printers'],
+        responses: {
+          '200': { $ref: '#/components/responses/PrinterResponse' },
+          '404': { $ref: '#/components/responses/NotFound' }
+        }
+      },
+      put: {
+        summary: 'Update a printer',
+        operationId: 'updatePrinter',
+        tags: ['Printers'],
+        description:
+          "Update any subset of a printer's identity or media configuration. " +
+          'Changing `dpi` alone re-derives the label size in inches, since the same ' +
+          'dot dimensions describe a different physical label at a different resolution.',
+        requestBody: {
+          required: true,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/PrinterProfileInput' },
+              examples: {
+                labelStock: {
+                  summary: 'Load different label stock on this printer',
+                  value: { labelSize: { widthDots: 812, heightDots: 1218, name: '4×6" (shipping)' } }
+                },
+                rename: { summary: 'Rename', value: { name: 'Shipping desk' } }
+              }
+            }
+          }
+        },
+        responses: {
+          '200': { $ref: '#/components/responses/PrinterResponse' },
+          '400': { $ref: '#/components/responses/ValidationError' },
+          '404': { $ref: '#/components/responses/NotFound' }
+        }
+      },
+      delete: {
+        summary: 'Remove a printer',
+        operationId: 'deletePrinter',
+        tags: ['Printers'],
+        description:
+          'Stops managing the printer. Its print history is kept — jobs record the ' +
+          'printer id as a plain string, so removing a printer never deletes what it printed.',
+        responses: {
+          '200': {
+            description: 'Printer removed',
+            content: {
+              'application/json': {
+                schema: { type: 'object', properties: { success: { type: 'boolean' } } }
+              }
+            }
+          },
+          '404': { $ref: '#/components/responses/NotFound' }
+        }
+      }
+    },
+    '/api/printers/{id}/default': {
+      parameters: [
+        { name: 'id', in: 'path', required: true, schema: { type: 'string' } }
+      ],
+      post: {
+        summary: 'Make this the default printer',
+        operationId: 'setDefaultPrinter',
+        tags: ['Printers'],
+        description: 'Used for any print request that does not name a printer.',
+        responses: {
+          '200': { $ref: '#/components/responses/PrinterResponse' },
+          '404': { $ref: '#/components/responses/NotFound' }
         }
       }
     },
@@ -108,7 +259,13 @@ export const OPENAPI_SPEC = {
                     maximum: 10,
                     default: 1
                   },
-                  target: { $ref: '#/components/schemas/PrintTarget' }
+                  target: { $ref: '#/components/schemas/PrintTarget' },
+                  printerId: { $ref: '#/components/schemas/PrinterId' },
+                  printerName: {
+                    type: 'string',
+                    description: 'Name to record on the job. Only needed for a printer this server cannot name itself — i.e. a browser-attached one.'
+                  },
+                  labelSize: { $ref: '#/components/schemas/LabelGeometry' }
                 }
               },
               examples: {
@@ -169,7 +326,13 @@ export const OPENAPI_SPEC = {
                     maximum: 1000,
                     description: 'Barcode height in dots'
                   },
-                  target: { $ref: '#/components/schemas/PrintTarget' }
+                  target: { $ref: '#/components/schemas/PrintTarget' },
+                  printerId: { $ref: '#/components/schemas/PrinterId' },
+                  printerName: {
+                    type: 'string',
+                    description: 'Name to record on the job. Only needed for a printer this server cannot name itself — i.e. a browser-attached one.'
+                  },
+                  labelSize: { $ref: '#/components/schemas/LabelGeometry' }
                 }
               },
               examples: {
@@ -217,7 +380,13 @@ export const OPENAPI_SPEC = {
                     default: 5,
                     description: 'QR code size multiplier'
                   },
-                  target: { $ref: '#/components/schemas/PrintTarget' }
+                  target: { $ref: '#/components/schemas/PrintTarget' },
+                  printerId: { $ref: '#/components/schemas/PrinterId' },
+                  printerName: {
+                    type: 'string',
+                    description: 'Name to record on the job. Only needed for a printer this server cannot name itself — i.e. a browser-attached one.'
+                  },
+                  labelSize: { $ref: '#/components/schemas/LabelGeometry' }
                 }
               }
             }
@@ -250,7 +419,13 @@ export const OPENAPI_SPEC = {
                 required: ['zpl'],
                 properties: {
                   zpl: { type: 'string' },
-                  target: { $ref: '#/components/schemas/PrintTarget' }
+                  target: { $ref: '#/components/schemas/PrintTarget' },
+                  printerId: { $ref: '#/components/schemas/PrinterId' },
+                  printerName: {
+                    type: 'string',
+                    description: 'Name to record on the job. Only needed for a printer this server cannot name itself — i.e. a browser-attached one.'
+                  },
+                  labelSize: { $ref: '#/components/schemas/LabelGeometry' }
                 }
               }
             }
@@ -285,7 +460,13 @@ export const OPENAPI_SPEC = {
                     items: { $ref: '#/components/schemas/LabelElement' }
                   },
                   copies: { type: 'integer', minimum: 1, maximum: 10 },
-                  target: { $ref: '#/components/schemas/PrintTarget' }
+                  target: { $ref: '#/components/schemas/PrintTarget' },
+                  printerId: { $ref: '#/components/schemas/PrinterId' },
+                  printerName: {
+                    type: 'string',
+                    description: 'Name to record on the job. Only needed for a printer this server cannot name itself — i.e. a browser-attached one.'
+                  },
+                  labelSize: { $ref: '#/components/schemas/LabelGeometry' }
                 }
               },
               examples: {
@@ -478,6 +659,7 @@ export const OPENAPI_SPEC = {
                   },
                   copies: { type: 'integer', minimum: 1, maximum: 500 },
                   serialStart: { type: 'integer', minimum: 0, default: 1 },
+                  printerId: { $ref: '#/components/schemas/PrinterId' },
                   serialFormat: { type: 'string', enum: ['#', '##', '###', '####', '#####'], default: '###' }
                 }
               }
@@ -496,6 +678,7 @@ export const OPENAPI_SPEC = {
                     totalCopies: { type: 'integer' },
                     serialStart: { type: 'integer' },
                     serialEnd: { type: 'integer' },
+                    printerId: { type: ['string', 'null'] },
                     results: {
                       type: 'array',
                       items: {
@@ -525,6 +708,7 @@ export const OPENAPI_SPEC = {
         tags: ['Jobs'],
         parameters: [
           { name: 'status', in: 'query', required: false, schema: { $ref: '#/components/schemas/JobStatus' }, description: 'Filter by job status' },
+          { name: 'printerId', in: 'query', required: false, schema: { type: 'string' }, description: 'Only jobs routed to this printer' },
           { name: 'limit', in: 'query', required: false, schema: { type: 'integer', default: 50, maximum: 200 } },
           { name: 'offset', in: 'query', required: false, schema: { type: 'integer', default: 0 } }
         ],
@@ -760,9 +944,9 @@ export const OPENAPI_SPEC = {
           '',
           '`^LL` is only sent for `continuous` tracking. Zebra documents it as ignored on non-continuous gap/mark media, where the real label length comes from the gap sensor during calibration.',
           '',
-          'Saving a label size via PUT /api/label-size already does this, so calling it directly is only needed to re-apply after a printer power cycle or to change tracking mode.',
+          'Acts on one printer. Omitted dimensions fall back to *that printer\'s* saved configuration, so `{ "printerId": "..." }` means "make this printer match what it is configured for" — which is what you want after swapping label stock or moving the printer to a different machine.',
           '',
-          'Omitted dimensions fall back to the configured label size, so an empty body means "apply the current label size".'
+          'Needed because changing a label size only affects the ZPL this app generates; the printer keeps its own stored print width and media settings until told otherwise.'
         ].join('\n'),
         requestBody: {
           required: false,
@@ -771,6 +955,7 @@ export const OPENAPI_SPEC = {
               schema: {
                 type: 'object',
                 properties: {
+                  printerId: { $ref: '#/components/schemas/PrinterId' },
                   widthDots: { type: 'integer', minimum: 100, maximum: 2400 },
                   heightDots: { type: 'integer', minimum: 50, maximum: 7967 },
                   dpi: { type: 'integer', enum: [203, 300, 600], default: 203 },
@@ -815,6 +1000,7 @@ export const OPENAPI_SPEC = {
                     applied: {
                       type: 'object',
                       properties: {
+                        printerId: { type: ['string', 'null'] },
                         widthDots: { type: 'integer' },
                         heightDots: { type: 'integer' },
                         dpi: { type: 'integer' },
@@ -845,7 +1031,10 @@ export const OPENAPI_SPEC = {
             'application/json': {
               schema: {
                 type: 'object',
-                properties: { target: { $ref: '#/components/schemas/PrintTarget' } }
+                properties: {
+                  printerId: { $ref: '#/components/schemas/PrinterId' },
+                  target: { $ref: '#/components/schemas/PrintTarget' }
+                }
               }
             }
           }
@@ -1015,9 +1204,28 @@ export const OPENAPI_SPEC = {
                   properties: {
                     printer: {
                       type: 'object',
+                      description: 'The default printer. `name` is null when none is configured.',
                       properties: {
-                        name: { type: 'string' },
+                        name: { type: ['string', 'null'] },
                         isReady: { type: 'boolean' }
+                      }
+                    },
+                    printers: {
+                      type: 'array',
+                      description: 'Every configured printer with its media config and pending job count.',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          id: { type: 'string' },
+                          name: { type: 'string' },
+                          transport: { $ref: '#/components/schemas/PrinterTransport' },
+                          cupsName: { type: ['string', 'null'] },
+                          isDefault: { type: 'boolean' },
+                          labelSize: { $ref: '#/components/schemas/LabelSize' },
+                          dpi: { type: 'integer' },
+                          tracking: { $ref: '#/components/schemas/MediaTracking' },
+                          pending: { type: 'integer' }
+                        }
                       }
                     },
                     queue: {
@@ -1419,6 +1627,12 @@ export const OPENAPI_SPEC = {
           printer_name: { type: ['string', 'null'] },
           cups_job_id: { type: ['string', 'null'] },
           error_message: { type: ['string', 'null'] },
+          printer_id: {
+            type: ['string', 'null'],
+            description:
+              'The configured printer this job was routed to. Null on jobs created before ' +
+              'printers were configurable. A `local_` prefix means a browser-attached printer.'
+          },
           label_width_dots: {
             type: ['integer', 'null'],
             description: 'Label width the job was rendered for, frozen at creation. Null on jobs created before this was recorded.'
@@ -1446,7 +1660,12 @@ export const OPENAPI_SPEC = {
         type: 'string',
         enum: ['server', 'local'],
         default: 'server',
-        description: 'Where the label is printed. "server" prints via CUPS on the host. "local" records the job and returns the generated ZPL for the caller to transmit itself (used by the browser over WebUSB); report the outcome via POST /api/jobs/{id}/result.'
+        description:
+          'Where the label is printed. "server" prints via CUPS on the host. "local" records ' +
+          'the job and returns the generated ZPL for the caller to transmit itself (used by the ' +
+          'browser over WebUSB); report the outcome via POST /api/jobs/{id}/result. ' +
+          'This is the coarse choice — prefer `printerId`, which names an actual printer and ' +
+          'brings its label geometry with it. A `local_` printer id implies "local" on its own.'
       },
       JobLogEntry: {
         type: 'object',
@@ -1482,6 +1701,112 @@ export const OPENAPI_SPEC = {
         }
       },
 
+      // ── Printers ────────────────────────────────────────────────────────
+      PrinterId: {
+        type: 'string',
+        description:
+          'Which configured printer to use. Omit to use the default printer. ' +
+          'Ids prefixed `local_` belong to a browser-attached printer: the server ' +
+          'cannot print to those, so naming one always returns the ZPL for the caller ' +
+          'to transmit, whatever `target` says.',
+        example: 'prn_m9x2k1_a7b3c9'
+      },
+      LabelGeometry: {
+        type: 'object',
+        description:
+          "Label geometry to render for, overriding the printer's saved configuration. " +
+          'This is how a browser-attached printer supplies its geometry — its configuration ' +
+          'lives in that browser, so the server has nothing to look up. Inches are always ' +
+          'derived from dots and DPI server-side and are not accepted here.',
+        required: ['widthDots', 'heightDots'],
+        properties: {
+          widthDots: { type: 'integer', example: 406 },
+          heightDots: { type: 'integer', example: 203 },
+          dpi: { type: 'integer', enum: [203, 300, 600] },
+          name: { type: 'string', example: '2×1" (small)' }
+        }
+      },
+      PrinterTransport: {
+        type: 'string',
+        enum: ['cups', 'usb', 'tcp'],
+        default: 'cups',
+        description:
+          'How this server reaches the printer. Only `cups` is implemented; `usb` and ' +
+          '`tcp` are reserved so profiles created for them round-trip.'
+      },
+      PrinterProfile: {
+        type: 'object',
+        description: 'A configured printer and the label stock it is loaded with.',
+        properties: {
+          id: { type: 'string', example: 'prn_m9x2k1_a7b3c9' },
+          name: { type: 'string', example: 'Warehouse GK420d' },
+          connection: {
+            type: 'string',
+            enum: ['server', 'local'],
+            description: 'Who drives this printer. Always "server" for printers in this registry.'
+          },
+          transport: { $ref: '#/components/schemas/PrinterTransport' },
+          cupsName: { type: ['string', 'null'], example: 'ZTC-GK420d' },
+          deviceUri: { type: ['string', 'null'] },
+          usbDeviceId: { type: ['string', 'null'] },
+          labelSize: { $ref: '#/components/schemas/LabelSize' },
+          dpi: { type: 'integer', enum: [203, 300, 600] },
+          tracking: { $ref: '#/components/schemas/MediaTracking' },
+          markOffset: { type: 'integer', description: "Black-mark offset in dots; only used when tracking is 'mark'." },
+          isDefault: { type: 'boolean', description: 'Used when a print request does not name a printer.' },
+          createdAt: { type: 'string' },
+          updatedAt: { type: 'string' }
+        }
+      },
+      PrinterProfileStatus: {
+        allOf: [
+          { $ref: '#/components/schemas/PrinterProfile' },
+          {
+            type: 'object',
+            properties: {
+              status: {
+                type: 'string',
+                enum: ['idle', 'printing', 'unavailable', 'unknown'],
+                description: 'Live CUPS status. "unknown" when discovery cannot see this queue.'
+              },
+              accepting: { type: 'boolean', description: 'Whether CUPS is accepting jobs for it.' }
+            }
+          }
+        ]
+      },
+      PrinterProfileInput: {
+        type: 'object',
+        properties: {
+          name: { type: 'string', example: 'Warehouse GK420d' },
+          transport: { $ref: '#/components/schemas/PrinterTransport' },
+          cupsName: {
+            type: ['string', 'null'],
+            description: 'CUPS queue name. Required when transport is `cups` (the default).',
+            example: 'ZTC-GK420d'
+          },
+          deviceUri: { type: ['string', 'null'] },
+          usbDeviceId: { type: ['string', 'null'] },
+          labelSize: { $ref: '#/components/schemas/LabelGeometry' },
+          dpi: { type: 'integer', enum: [203, 300, 600] },
+          tracking: { $ref: '#/components/schemas/MediaTracking' },
+          markOffset: { type: ['integer', 'null'], minimum: -240, maximum: 566 },
+          isDefault: { type: 'boolean' }
+        }
+      },
+      DiscoveredPrinter: {
+        type: 'object',
+        description: 'A printer CUPS reports, before it has been configured.',
+        properties: {
+          name: { type: 'string', example: 'ZTC-GK420d' },
+          uri: { type: 'string' },
+          model: { type: 'string' },
+          status: { type: 'string', enum: ['idle', 'printing', 'unavailable', 'unknown'] },
+          accepting: { type: 'boolean' },
+          serial: { type: 'string' },
+          isZebra: { type: 'boolean' }
+        }
+      },
+
       // ── Updates ─────────────────────────────────────────────────────────
       VersionInfo: {
         type: 'object',
@@ -1496,6 +1821,20 @@ export const OPENAPI_SPEC = {
       }
     },
     responses: {
+      PrinterResponse: {
+        description: 'The configured printer',
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                success: { type: 'boolean' },
+                printer: { $ref: '#/components/schemas/PrinterProfile' }
+              }
+            }
+          }
+        }
+      },
       PrintSuccess: {
         description: 'Job recorded. Printed via CUPS, queued for retry, or returned as ZPL for the caller to transmit.',
         content: {
@@ -1519,6 +1858,10 @@ export const OPENAPI_SPEC = {
                     heightDots: { type: 'integer' },
                     dpi: { type: 'integer' }
                   }
+                },
+                printerId: {
+                  type: ['string', 'null'],
+                  description: 'The printer this job was routed to, resolved from the request or the default.'
                 },
                 error: { type: 'string' }
               }
@@ -1615,13 +1958,13 @@ export const OPENAPI_SPEC = {
   security: [],
   tags: [
     { name: 'System', description: 'Health, diagnostics, and API docs' },
-    { name: 'Discovery', description: 'Printer discovery' },
+    { name: 'Printers', description: 'Configure printers and their label stock' },
     { name: 'Printing', description: 'Label printing endpoints' },
     { name: 'Rendering', description: 'Build ZPL without printing (for previews)' },
     { name: 'Templates', description: 'Reusable, auto-scaling label templates' },
     { name: 'Jobs', description: 'Print queue and job management' },
     { name: 'Printer', description: 'Media configuration and sensor calibration' },
-    { name: 'Settings', description: 'Server settings and label sizing' },
+    { name: 'Settings', description: 'Server settings and legacy global label sizing' },
     { name: 'Maintenance', description: 'Version checks and self-update' }
   ]
 } as const

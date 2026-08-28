@@ -5,8 +5,16 @@
 import type { Handler } from '../router'
 import { json, html, checkAuth } from '../helpers'
 import { OPENAPI_SPEC, swaggerUiHtml } from '../../openapi'
-import { listJobs, getJob, getJobLogs, getJobStats, countPendingJobs } from '../../db/print-job-repo'
+import {
+  listJobs,
+  getJob,
+  getJobLogs,
+  getJobStats,
+  countPendingJobs,
+  countPendingJobsForPrinter
+} from '../../db/print-job-repo'
 import { getAllSettings, getPrinterEvents, getLabelSize, getRecentSizes, setLabelSize, STANDARD_SIZES } from '../../db/settings-repo'
+import { listPrinterProfiles } from '../../db/printer-repo'
 import { checkForUpdates } from '../../updater'
 import { getSqlite } from '../../db/database'
 import { mediaConfigZpl } from '../../zpl'
@@ -26,13 +34,23 @@ export const healthHandler: Handler = async (_req, res, printer) => {
   json(res, { status: 'ok', printer: printer?.name ?? null })
 }
 
-/** GET /api/printers — list available printers */
-export function printersHandler(apiKey: string): Handler {
+/**
+ * GET /api/printers/discovered — printers CUPS can see, configured or not.
+ *
+ * The configured printer list lives at `GET /api/printers`; this is the raw
+ * discovery view, kept for diagnostics and for callers that only want to know
+ * what hardware is attached.
+ */
+export function printersDiscoveredHandler(apiKey: string): Handler {
   return async (req, res, _printer) => {
     if (!checkAuth(req, res, apiKey)) return
     const { discoverPrinters } = await import('../../discovery')
-    const printers = await discoverPrinters()
-    json(res, { printers })
+    try {
+      json(res, { printers: await discoverPrinters() })
+    } catch (err) {
+      // No CUPS here. An empty list is the honest answer, not an error.
+      json(res, { printers: [], error: (err as Error).message })
+    }
   }
 }
 
@@ -55,6 +73,7 @@ export function jobsListHandler(apiKey: string): Handler {
 
     const url = new URL(req.url ?? '/', `http://${req.headers.host}`)
     const status = url.searchParams.get('status') as string | undefined
+    const printerId = url.searchParams.get('printerId') ?? undefined
     const limit = parseInt(url.searchParams.get('limit') ?? '50', 10)
     const offset = parseInt(url.searchParams.get('offset') ?? '0', 10)
 
@@ -67,6 +86,7 @@ export function jobsListHandler(apiKey: string): Handler {
     const jobs = listJobs({
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
       status: status as any,
+      printerId,
       limit: Math.min(limit, 200),
       offset
     })
@@ -129,11 +149,28 @@ export function debugHandler(apiKey: string, getQueue: () => PrintQueue | null):
     const sqlite = getSqlite()
     const dbSize = sqlite.prepare('SELECT page_count * page_size as size FROM pragma_page_count(), pragma_page_size()').get() as { size: number }
 
+    // Reported per configured printer rather than for a single one, since the
+    // interesting failure now is "which of my printers is offline".
+    const printers = []
+    for (const profile of listPrinterProfiles()) {
+      printers.push({
+        id: profile.id,
+        name: profile.name,
+        transport: profile.transport,
+        cupsName: profile.cupsName,
+        isDefault: profile.isDefault,
+        labelSize: profile.labelSize,
+        dpi: profile.dpi,
+        tracking: profile.tracking,
+        pending: countPendingJobsForPrinter(profile.id)
+      })
+    }
+
     const info = {
-      printer: {
-        name: printer.name,
-        isReady: await printer.isReady()
-      },
+      printer: printer
+        ? { name: printer.name, isReady: await printer.isReady() }
+        : { name: null, isReady: false },
+      printers,
       queue: {
         pending: countPendingJobs(),
         processorRunning: getQueue() !== null

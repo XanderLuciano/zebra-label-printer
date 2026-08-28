@@ -1,9 +1,9 @@
 <script setup lang="ts">
 const api = useApi();
-// Routes to the server queue or a local USB printer, per the Settings preference.
-const { printLabel, load: loadPrintTarget } = usePrintTarget();
+// Prints go to the printer selected in Settings, at that printer's label size.
+const { printLabel, load: loadPrinters } = usePrintTarget();
 
-onMounted(loadPrintTarget);
+onMounted(loadPrinters);
 
 // Part label form
 const partForm = reactive({

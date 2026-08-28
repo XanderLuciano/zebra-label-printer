@@ -2,11 +2,13 @@
 import { h, resolveComponent } from 'vue'
 import type { TableColumn } from '@nuxt/ui'
 import type { PrintLabelElement } from '../composables/useTemplateEngine'
+import type { Job } from '../composables/useApi'
 
 const api = useApi();
-const { printText, printBarcode, printQR, printZpl, printLabel, load: loadPrintTarget } = usePrintTarget();
+const { printText, printBarcode, printQR, printZpl, printLabel, load: loadPrinters } = usePrintTarget();
+const printers = usePrinters();
 
-onMounted(loadPrintTarget);
+onMounted(loadPrinters);
 
 const UBadge = resolveComponent('UBadge')
 const UButton = resolveComponent('UButton')
@@ -19,9 +21,7 @@ const statusOptions = [
   { label: 'Cancelled', value: 'cancelled' },
 ];
 
-// Fetch all jobs and label size for preview
 const { data, refresh, status: fetchStatus } = useAsyncData('jobs', () => api.getJobs());
-const { data: labelSize } = useAsyncData('label-size', () => api.getLabelSize());
 
 const filteredJobs = computed(() => {
   const jobs = data.value?.jobs ?? [];
@@ -55,20 +55,14 @@ function formatDate(d: string) {
   return date.toLocaleString();
 }
 
-type PrintJob = {
-  id: string;
-  job_type: string;
-  status: string;
-  printer_name: string | null;
-  request_data: string;
-  zpl_commands: string | null;
-  created_at: string;
-  // Label geometry frozen when the job was created. Null on jobs that predate
-  // the snapshot columns.
-  label_width_dots: number | null;
-  label_height_dots: number | null;
-  label_dpi: number | null;
-};
+/**
+ * The job shape this table renders.
+ *
+ * Aliased to the API's `Job` rather than redeclared: the local copy had already
+ * drifted once (it was missing `printer_id`), and every field this page reads
+ * comes off the wire anyway.
+ */
+type PrintJob = Job;
 
 const columns: TableColumn<PrintJob>[] = [
   {
@@ -118,6 +112,12 @@ const columns: TableColumn<PrintJob>[] = [
         size: 'xs'
       }, () => status);
     }
+  },
+  {
+    id: 'printer',
+    header: 'Printer',
+    cell: ({ row }) => jobPrinterName(row.original),
+    meta: { class: { td: 'text-sm text-gray-500 whitespace-nowrap max-w-[14rem] truncate' } }
   },
   {
     id: 'label_size',
@@ -202,25 +202,35 @@ function getElements(job: PrintJob): PrintLabelElement[] | null {
  * printed last week on 2×1" labels was still printed on 2×1" labels, and
  * redrawing it at the new size misrepresents it.
  *
- * Jobs created before the snapshot columns existed have no recorded size; those
- * fall back to the current setting, flagged in the UI so it's clear the
- * dimensions are a guess.
+ * Jobs created before the snapshot columns existed have no recorded size. Those
+ * fall back to the configuration of the printer the job went to — a better guess
+ * than a single global size, which with several printers set up would be wrong for
+ * most of them — and are flagged in the UI so it's clear the dimensions are
+ * inferred.
  */
 function jobLabelSize(job: PrintJob) {
+  const printer = printers.get(job.printer_id);
+
   if (job.label_width_dots && job.label_height_dots) {
     return {
       widthDots: job.label_width_dots,
       heightDots: job.label_height_dots,
-      dpi: job.label_dpi ?? labelSize.value?.dpi ?? 203,
+      dpi: job.label_dpi ?? printer?.dpi ?? 203,
       recorded: true,
     };
   }
+
   return {
-    widthDots: labelSize.value?.current?.widthDots ?? 609,
-    heightDots: labelSize.value?.current?.heightDots ?? 1015,
-    dpi: labelSize.value?.dpi ?? 203,
+    widthDots: printer?.labelSize.widthDots ?? 609,
+    heightDots: printer?.labelSize.heightDots ?? 1015,
+    dpi: printer?.dpi ?? 203,
     recorded: false,
   };
+}
+
+/** The printer a job went to, for display. Falls back to the recorded name. */
+function jobPrinterName(job: PrintJob): string {
+  return printers.get(job.printer_id)?.name ?? job.printer_name ?? '—';
 }
 
 /** Human-readable label size for the history row, e.g. `2 × 1" (406×203)` */
@@ -335,7 +345,7 @@ const expanded = ref<Record<string, boolean>>({});
               :max-width-px="300"
             />
             <p v-if="!jobLabelSize(row.original).recorded" class="text-xs text-amber-600 dark:text-amber-400 mt-1 max-w-[300px]">
-              This job has no recorded label size, so the preview uses the current setting.
+              This job has no recorded label size, so the preview uses its printer's current configuration.
             </p>
           </div>
           <div v-else class="text-sm text-gray-500 italic">

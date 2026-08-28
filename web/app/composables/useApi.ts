@@ -31,6 +31,83 @@ export type PrintTargetName = 'server' | 'local';
 /** How the printer detects the top of each label (ZPL ^MN) */
 export type MediaTracking = 'gap' | 'mark' | 'continuous' | 'auto';
 
+/** How the bytes reach a printer. `webusb` printers are driven by the browser. */
+export type PrinterTransport = 'cups' | 'usb' | 'tcp' | 'webusb';
+
+export interface LabelSize {
+  widthInches: number;
+  heightInches: number;
+  widthDots: number;
+  heightDots: number;
+  name: string;
+}
+
+/**
+ * A configured printer and the label stock it's loaded with.
+ *
+ * Mirrors PrinterProfile in src/types.ts. Deliberately the same shape for server
+ * printers and browser-attached ones, so the UI and the print path don't have to
+ * branch on which kind they're holding — only the storage location and the final
+ * transport differ.
+ */
+export interface PrinterProfile {
+  id: string;
+  name: string;
+  /** Who drives this printer: the server, or the browser that owns the USB device */
+  connection: 'server' | 'local';
+  transport: PrinterTransport;
+  cupsName?: string | null;
+  deviceUri?: string | null;
+  /** WebUSB device key, for browser-attached printers */
+  usbDeviceId?: string | null;
+  labelSize: LabelSize;
+  dpi: number;
+  tracking: MediaTracking;
+  markOffset?: number;
+  /** Used for print requests that don't name a printer */
+  isDefault: boolean;
+  createdAt?: string;
+  updatedAt?: string;
+}
+
+/** A server printer with the live CUPS status the server reported alongside it. */
+export interface PrinterStatusView extends PrinterProfile {
+  status: 'idle' | 'printing' | 'unavailable' | 'unknown';
+  accepting: boolean;
+}
+
+/** A printer CUPS can see that hasn't been configured yet. */
+export interface DiscoveredPrinter {
+  name: string;
+  uri: string;
+  model: string;
+  status: 'idle' | 'printing' | 'unavailable' | 'unknown';
+  accepting: boolean;
+  serial?: string;
+  isZebra: boolean;
+}
+
+/** Label geometry as the API accepts it — dots only; inches are derived server-side. */
+export interface LabelGeometryInput {
+  widthDots: number;
+  heightDots: number;
+  dpi?: number;
+  name?: string;
+}
+
+/**
+ * Which printer a print request is for.
+ *
+ * `printerId` is the real choice. `labelSize` accompanies it for browser-attached
+ * printers, whose configuration lives in the browser rather than on the server.
+ */
+export interface PrinterSelection {
+  target?: PrintTargetName;
+  printerId?: string | null;
+  printerName?: string | null;
+  labelSize?: LabelGeometryInput | null;
+}
+
 export interface Job {
   id: string;
   status: JobStatus;
@@ -38,6 +115,11 @@ export interface Job {
   request_data: string;
   zpl_commands: string | null;
   printer_name: string | null;
+  /**
+   * The configured printer this job went to. Null on jobs predating the registry.
+   * A `local_` prefix means a browser-attached printer.
+   */
+  printer_id: string | null;
   cups_job_id: string | null;
   error_message: string | null;
   /** Label width the job was rendered for. Null on jobs predating the snapshot. */
@@ -66,6 +148,8 @@ export interface PrintResponse {
   zpl?: string;
   error?: string;
   labelSize?: { widthDots: number; heightDots: number; dpi: number };
+  /** The printer the server routed this job to. */
+  printerId?: string | null;
 }
 
 export interface JobLog {
@@ -109,7 +193,20 @@ export interface ProcessMemoryUsage {
 }
 
 export interface DebugInfo {
-  printer: { name: string; isReady: boolean };
+  /** The default printer. `name` is null when none is configured. */
+  printer: { name: string | null; isReady: boolean };
+  /** Every configured printer with its media config and pending job count. */
+  printers: Array<{
+    id: string;
+    name: string;
+    transport: PrinterTransport;
+    cupsName: string | null;
+    isDefault: boolean;
+    labelSize: LabelSize;
+    dpi: number;
+    tracking: MediaTracking;
+    pending: number;
+  }>;
   queue: { pending: number; processorRunning: boolean };
   database: { path: string; sizeBytes: number; sizeFormatted: string; stats: JobStats };
   server: { uptime: number; memory: ProcessMemoryUsage; nodeVersion: string };
@@ -138,23 +235,77 @@ export function useApi() {
     // Health
     getHealth: () => get<{ status: string; printer: string | null }>('/api/health'),
 
-    // Printers
-    getPrinters: () => get<{ printers: Array<{ name: string; isZebra: boolean; status: string }> }>('/api/printers'),
+    // ── Printers ────────────────────────────────────────────────────────────
+    // Configured printers, each with its own media config, plus the CUPS queues
+    // that are visible but not set up yet. Browser-attached printers are not here:
+    // that pairing belongs to one browser, so those live in localStorage.
 
-    // Print — pass `target: 'local'` to get ZPL back for WebUSB instead of printing
-    printText: (data: { lines: string[]; copies?: number; target?: PrintTargetName }) =>
+    getPrinters: () =>
+      get<{ printers: PrinterStatusView[]; discovered: DiscoveredPrinter[] }>('/api/printers'),
+
+    getPrinter: (id: string) =>
+      get<{ printer: PrinterProfile }>(`/api/printers/${encodeURIComponent(id)}`),
+
+    createPrinter: (data: {
+      name?: string;
+      transport?: PrinterTransport;
+      cupsName?: string | null;
+      deviceUri?: string | null;
+      labelSize?: LabelGeometryInput;
+      dpi?: number;
+      tracking?: MediaTracking;
+      markOffset?: number | null;
+      isDefault?: boolean;
+    }) => post<{ printer: PrinterProfile }>('/api/printers', data),
+
+    updatePrinter: (id: string, data: {
+      name?: string;
+      cupsName?: string | null;
+      deviceUri?: string | null;
+      labelSize?: LabelGeometryInput;
+      dpi?: number;
+      tracking?: MediaTracking;
+      markOffset?: number | null;
+      isDefault?: boolean;
+    }) =>
+      $fetch<{ printer: PrinterProfile }>(`${base}/api/printers/${encodeURIComponent(id)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data),
+      }),
+
+    deletePrinter: (id: string) =>
+      $fetch<{ success: boolean }>(`${base}/api/printers/${encodeURIComponent(id)}`, {
+        method: 'DELETE',
+      }),
+
+    setDefaultPrinter: (id: string) =>
+      post<{ success: boolean; printer: PrinterProfile }>(
+        `/api/printers/${encodeURIComponent(id)}/default`,
+      ),
+
+    /** Raw CUPS discovery, configured or not. */
+    getDiscoveredPrinters: () =>
+      get<{ printers: DiscoveredPrinter[]; error?: string }>('/api/printers/discovered'),
+
+    // ── Print ───────────────────────────────────────────────────────────────
+    // Pass `printerId` to choose a printer. A `local_` id (or `target: 'local'`)
+    // returns the ZPL for the browser to push over WebUSB instead of printing it,
+    // and `labelSize` is how such a printer's geometry reaches the server.
+
+    printText: (data: { lines: string[]; copies?: number } & PrinterSelection) =>
       post<PrintResponse>('/api/print/text', data),
 
-    printBarcode: (data: { data: string; type?: string; text?: string; target?: PrintTargetName }) =>
+    printBarcode: (data: { data: string; type?: string; text?: string } & PrinterSelection) =>
       post<PrintResponse>('/api/print/barcode', data),
 
-    printQR: (data: { data: string; text?: string; magnification?: number; target?: PrintTargetName }) =>
+    printQR: (data: { data: string; text?: string; magnification?: number } & PrinterSelection) =>
       post<PrintResponse>('/api/print/qr', data),
 
-    printZpl: (zpl: string, target?: PrintTargetName) =>
-      post<PrintResponse>('/api/print/zpl', { zpl, ...(target ? { target } : {}) }),
+    printZpl: (zpl: string, selection: PrinterSelection = {}) =>
+      post<PrintResponse>('/api/print/zpl', { zpl, ...selection }),
 
-    printLabel: (data: { elements: Array<Record<string, unknown>>; copies?: number; target?: PrintTargetName }) =>
+    printLabel: (data: { elements: Array<Record<string, unknown>>; copies?: number } & PrinterSelection) =>
       post<PrintResponse>('/api/print/label', data),
 
     // Render (build ZPL without printing — for accurate previews)
@@ -207,6 +358,7 @@ export function useApi() {
      * size. With `target: 'local'` the ZPL is returned instead of printed.
      */
     configurePrinter: (data: {
+      printerId?: string | null;
       widthDots?: number;
       heightDots?: number;
       dpi?: number;
@@ -221,14 +373,21 @@ export function useApi() {
         target: PrintTargetName;
         zpl?: string;
         error?: string;
-        applied: { widthDots: number; heightDots: number; dpi: number; tracking: string; calibrated: boolean };
+        applied: {
+          printerId: string | null;
+          widthDots: number;
+          heightDots: number;
+          dpi: number;
+          tracking: string;
+          calibrated: boolean;
+        };
       }>('/api/printer/configure', data),
 
     /** Run a media sensor calibration (~JC). The printer feeds 2–4 labels. */
-    calibratePrinter: (target?: PrintTargetName) =>
+    calibratePrinter: (options: { printerId?: string | null; target?: PrintTargetName } = {}) =>
       post<{ success: boolean; target: PrintTargetName; zpl?: string; message?: string; error?: string }>(
         '/api/printer/calibrate',
-        { ...(target ? { target } : {}) },
+        options,
       ),
 
     // Debug

@@ -1,8 +1,7 @@
 <script setup lang="ts">
 const api = useApi();
-// Routes to the server queue or a local USB printer, per the Settings preference.
-const { target: printTarget, printText, printLabel, load: loadPrintTarget } = usePrintTarget();
-const { isConnected: usbConnected, listenForUsbEvents, reconnect: reconnectUsb } = useLocalPrinter();
+// Prints go to whichever printer is selected in Settings, server or USB-attached.
+const { printer: activePrinter, printText, printLabel, load: loadPrinters } = usePrintTarget();
 
 const { data: health, refresh: refreshHealth } = useAsyncData('health', () => api.getHealth());
 const { data: debug } = useAsyncData('debug', () => api.getDebug());
@@ -11,9 +10,7 @@ const { data: stats, refresh: refreshStats } = useAsyncData('stats', () => api.g
 // Poll health + stats every 5 seconds
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 onMounted(() => {
-  loadPrintTarget();
-  listenForUsbEvents();
-  reconnectUsb();
+  loadPrinters();
   pollInterval = setInterval(() => {
     refreshHealth();
     refreshStats();
@@ -341,15 +338,16 @@ const formatUptime = (s: number) => {
   <div class="p-6 space-y-6">
     <div class="flex items-center justify-between flex-wrap gap-3">
       <h1 class="text-2xl font-bold">Dashboard</h1>
-      <!-- Where prints from this browser are going -->
+      <!-- Which printer prints from this browser go to, and at what size -->
       <UBadge
-        :color="printTarget === 'local' ? (usbConnected ? 'info' : 'warning') : 'neutral'"
+        :color="!activePrinter ? 'warning' : activePrinter.ready ? (activePrinter.connection === 'local' ? 'info' : 'neutral') : 'warning'"
         variant="subtle"
-        :icon="printTarget === 'local' ? 'i-lucide-usb' : 'i-lucide-server'"
+        :icon="activePrinter?.connection === 'local' ? 'i-lucide-usb' : 'i-lucide-server'"
+        :to="!activePrinter ? '/settings' : undefined"
       >
-        {{ printTarget === 'local'
-          ? (usbConnected ? 'Printing to local USB' : 'Local USB — not connected')
-          : 'Printing to server' }}
+        {{ activePrinter
+          ? `${activePrinter.name} · ${activePrinter.labelSize.name}${activePrinter.ready ? '' : ' — unavailable'}`
+          : 'No printer set up' }}
       </UBadge>
     </div>
 

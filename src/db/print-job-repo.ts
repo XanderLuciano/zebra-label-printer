@@ -3,11 +3,18 @@
  * Uses Drizzle ORM for type-safe, database-agnostic queries.
  */
 
-import { eq, sql, desc, asc, count, and } from 'drizzle-orm'
+import { eq, sql, desc, asc, count, and, or, type SQL, type SQLWrapper } from 'drizzle-orm'
 import { getDb } from './database'
 import { printJobs, jobLogs } from './schema'
 import type { JobStatus, JobType, LogLevel } from '../constants'
-import { DEFAULT_JOB_LIMIT, MAX_JOB_LIMIT, DEFAULT_DPI } from '../constants'
+import {
+  DEFAULT_JOB_LIMIT,
+  MAX_JOB_LIMIT,
+  DEFAULT_DPI,
+  LOCAL_PRINTER_ID_PREFIX,
+  LOCAL_PRINTER_NAME,
+  PENDING_SCAN_LIMIT
+} from '../constants'
 
 export type { JobStatus, JobType }
 
@@ -18,6 +25,14 @@ export interface PrintJob {
   request_data: string;   // JSON
   zpl_commands: string | null;
   printer_name: string | null;
+  /**
+   * The configured printer this job was routed to.
+   *
+   * Null on jobs created before printers were configurable. Browser-owned
+   * printers use ids prefixed `local_`, which the server can't resolve — it only
+   * records them so history can say which USB printer produced the label.
+   */
+  printer_id: string | null;
   cups_job_id: string | null;
   error_message: string | null;
   /** Label width this job was rendered for, in dots. Null for pre-snapshot rows. */
@@ -76,6 +91,7 @@ function toPrintJob(row: typeof printJobs.$inferSelect): PrintJob {
     request_data: row.requestData,
     zpl_commands: row.zplCommands,
     printer_name: row.printerName,
+    printer_id: row.printerId,
     cups_job_id: row.cupsJobId,
     error_message: row.errorMessage,
     label_width_dots: row.labelWidthDots,
@@ -104,14 +120,18 @@ function toJobLogEntry(row: typeof jobLogs.$inferSelect): JobLogEntry {
  *
  * @param labelSize - Label geometry to freeze onto the job. Pass the size the
  *   ZPL is being rendered for so history and reprints stay accurate even after
- *   the global label size changes.
+ *   the printer's configured label size changes.
+ * @param printerId - The configured printer this job is bound for. Recording it
+ *   is what lets the queue processor route work per printer instead of assuming
+ *   a single one, and what tells history which printer a label came out of.
  */
 export function createJob(
   jobType: JobType,
   requestData: unknown,
   zplCommands?: string,
-  printerName?: string,
-  labelSize?: JobLabelSize
+  printerName?: string | null,
+  labelSize?: JobLabelSize,
+  printerId?: string | null
 ): PrintJob {
   const db = getDb()
   const id = generateId()
@@ -124,6 +144,7 @@ export function createJob(
     requestData: data,
     zplCommands: zplCommands ?? null,
     printerName: printerName ?? null,
+    printerId: printerId ?? null,
     labelWidthDots: labelSize?.widthDots ?? null,
     labelHeightDots: labelSize?.heightDots ?? null,
     labelDpi: labelSize?.dpi ?? null,
@@ -215,12 +236,39 @@ export function claimJob(id: string): boolean {
  * @returns the number of jobs failed.
  */
 export function failStalePrintingJobs(printerName: string, olderThanSeconds: number): number {
+  return failStaleJobs(eq(printJobs.printerName, printerName), olderThanSeconds)
+}
+
+/**
+ * Reap abandoned prints across every browser-attached printer.
+ *
+ * Local jobs used to be identifiable by a single hardcoded printer name, because
+ * there was only ever one of them. Now each browser-owned printer has its own id
+ * and its own name, so the reaper matches on the `local_` id prefix — with the
+ * old name kept as a fallback so jobs already in a database still get closed out.
+ *
+ * @returns the number of jobs failed.
+ */
+export function failStaleLocalPrintingJobs(olderThanSeconds: number): number {
+  // LIKE needs an explicit escape here: the prefix ends in '_', which is LIKE's
+  // single-character wildcard, so an unescaped pattern would also match ids like
+  // 'localX…'.
+  return failStaleJobs(
+    or(
+      sql`${printJobs.printerId} LIKE ${`${LOCAL_PRINTER_ID_PREFIX.replace(/_/g, '\\_')}%`} ESCAPE '\\'`,
+      eq(printJobs.printerName, LOCAL_PRINTER_NAME)
+    )!,
+    olderThanSeconds
+  )
+}
+
+function failStaleJobs(match: SQL | SQLWrapper, olderThanSeconds: number): number {
   const db = getDb()
   const stale = db.select({ id: printJobs.id })
     .from(printJobs)
     .where(and(
       eq(printJobs.status, 'printing'),
-      eq(printJobs.printerName, printerName),
+      match,
       sql`${printJobs.startedAt} < datetime('now', ${`-${olderThanSeconds} seconds`})`
     ))
     .all()
@@ -243,6 +291,8 @@ export function setJobZpl(id: string, zpl: string): void {
 /** List jobs with optional filters */
 export function listJobs(options: {
   status?: JobStatus;
+  /** Only jobs bound for this configured printer */
+  printerId?: string;
   limit?: number;
   offset?: number;
   orderBy?: 'created_at' | 'completed_at' | 'priority';
@@ -266,6 +316,9 @@ export function listJobs(options: {
   if (options.status) {
     conditions.push(eq(printJobs.status, options.status))
   }
+  if (options.printerId) {
+    conditions.push(eq(printJobs.printerId, options.printerId))
+  }
 
   const rows = db.select()
     .from(printJobs)
@@ -280,15 +333,39 @@ export function listJobs(options: {
 
 /** Get the next pending job (highest priority, oldest first) */
 export function getNextPendingJob(): PrintJob | null {
+  return listPendingJobs(1)[0] ?? null
+}
+
+/**
+ * Pending jobs in service order (highest priority, oldest first).
+ *
+ * The queue processor needs a window rather than a single job now that more than
+ * one printer can be configured: taking only the head of the queue meant a job
+ * bound for an offline printer blocked every job behind it, including ones whose
+ * printer was sitting idle.
+ *
+ * @param limit - How many jobs to consider per tick.
+ */
+export function listPendingJobs(limit = PENDING_SCAN_LIMIT): PrintJob[] {
   const db = getDb()
-  const row = db.select()
+  const rows = db.select()
     .from(printJobs)
     .where(eq(printJobs.status, 'pending'))
     .orderBy(desc(printJobs.priority), asc(printJobs.createdAt))
-    .limit(1)
-    .get()
+    .limit(limit)
+    .all()
 
-  return row ? toPrintJob(row) : null
+  return rows.map(toPrintJob)
+}
+
+/** Count pending jobs bound for a specific printer. */
+export function countPendingJobsForPrinter(printerId: string): number {
+  const db = getDb()
+  const row = db.select({ cnt: count() })
+    .from(printJobs)
+    .where(and(eq(printJobs.status, 'pending'), eq(printJobs.printerId, printerId)))
+    .get()
+  return row?.cnt ?? 0
 }
 
 /** Count pending jobs */

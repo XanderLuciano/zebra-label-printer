@@ -82,6 +82,37 @@ export type MediaTracking = typeof MEDIA_TRACKINGS[number]
 export const PRINT_TARGETS = ['server', 'local'] as const
 export type PrintTarget = typeof PRINT_TARGETS[number]
 
+// ─── Printer Connection ──────────────────────────────────────────────────────
+//
+// The same split as PRINT_TARGETS, named from the printer's point of view
+// instead of the request's: 'server' printers are driven by this process,
+// 'local' printers are driven by whichever browser they're plugged into. A
+// print request's target is just the connection of the printer it names.
+
+export const PRINTER_CONNECTIONS = PRINT_TARGETS
+export type PrinterConnection = PrintTarget
+
+// ─── Printer Transport ───────────────────────────────────────────────────────
+//
+// *How* the bytes reach the printer, independent of who sends them.
+//
+//   cups   — server-side, shelled out to `lp` (the only server transport today)
+//   usb    — server-side, direct USB from this process
+//   tcp    — server-side, raw socket to a networked printer on port 9100
+//   webusb — browser-side, straight from the page over WebUSB
+
+export const PRINTER_TRANSPORTS = ['cups', 'usb', 'tcp', 'webusb'] as const
+export type PrinterTransport = typeof PRINTER_TRANSPORTS[number]
+
+/** Transports this process can drive itself */
+export const SERVER_PRINTER_TRANSPORTS = ['cups', 'usb', 'tcp'] as const
+
+/** Default transport for a printer registered on the server */
+export const DEFAULT_PRINTER_TRANSPORT: PrinterTransport = 'cups'
+
+/** Default transport for a printer paired with a browser */
+export const LOCAL_PRINTER_TRANSPORT: PrinterTransport = 'webusb'
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // PRINTER & LABEL DEFAULTS
 // ═══════════════════════════════════════════════════════════════════════════════
@@ -177,12 +208,31 @@ export const DEFAULT_EVENT_LIMIT = 50
 /** Number of recent label sizes to remember */
 export const MAX_RECENT_SIZES = 10
 
+/**
+ * How many pending jobs the queue processor considers per tick.
+ *
+ * With several printers configured, the head of the queue may be bound for one
+ * that's offline. The processor walks a window instead of a single job so work
+ * for the printers that *are* ready still goes out.
+ */
+export const PENDING_SCAN_LIMIT = 25
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // LOCAL (WebUSB) PRINTING
 // ═══════════════════════════════════════════════════════════════════════════════
 
-/** Printer name recorded on jobs handed to a browser for direct USB transfer */
+/** Printer name recorded on jobs handed to a browser that didn't name its printer */
 export const LOCAL_PRINTER_NAME = 'local-usb'
+
+/**
+ * Prefix on printer profile ids owned by a browser rather than the server.
+ *
+ * Local printers are configured and stored client-side — the server never sees
+ * the device, so it can't validate the id. Jobs still record it, which is what
+ * lets print history say *which* USB printer a label came out of. The prefix is
+ * how the server tells "a browser's printer" from one in its own registry.
+ */
+export const LOCAL_PRINTER_ID_PREFIX = 'local_'
 
 /**
  * How long a local print may stay in 'printing' before it's marked failed.

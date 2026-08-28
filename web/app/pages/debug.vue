@@ -31,29 +31,64 @@ const formatUptime = (s: number) => {
       <UButton icon="i-lucide-refresh-cw" variant="ghost" size="sm" @click="refresh()" />
     </div>
 
-    <!-- Printer -->
+    <!-- Printers configured on the server, with each one's own media config -->
     <UCard>
       <template #header>
         <div class="flex items-center gap-2">
           <UIcon name="i-lucide-printer" />
-          <span class="font-medium">Printer</span>
+          <span class="font-medium">Server Printers</span>
+          <UBadge variant="subtle" size="xs" color="neutral">
+            {{ debug?.printers?.length ?? 0 }}
+          </UBadge>
         </div>
       </template>
-      <div v-if="debug?.printer" class="grid grid-cols-2 sm:grid-cols-3 gap-4 text-sm">
-        <div>
-          <span class="text-gray-500">Name</span>
-          <p class="font-medium">{{ debug.printer.name }}</p>
+
+      <div v-if="debug?.printers?.length" class="space-y-3">
+        <div
+          v-for="printer in debug.printers"
+          :key="printer.id"
+          class="grid grid-cols-2 sm:grid-cols-4 gap-4 text-sm border-b last:border-0 pb-3 last:pb-0"
+        >
+          <div>
+            <span class="text-gray-500">Name</span>
+            <p class="font-medium flex items-center gap-1.5">
+              {{ printer.name }}
+              <UBadge v-if="printer.isDefault" variant="subtle" size="xs" color="primary">default</UBadge>
+            </p>
+            <p class="text-xs text-gray-500 font-mono truncate">{{ printer.cupsName ?? printer.transport }}</p>
+          </div>
+          <div>
+            <span class="text-gray-500">Label</span>
+            <p>{{ printer.labelSize.name }}</p>
+            <p class="text-xs text-gray-500 font-mono">
+              {{ printer.labelSize.widthDots }}×{{ printer.labelSize.heightDots }} @ {{ printer.dpi }}
+            </p>
+          </div>
+          <div>
+            <span class="text-gray-500">Tracking</span>
+            <p>{{ printer.tracking }}</p>
+          </div>
+          <div>
+            <span class="text-gray-500">Pending</span>
+            <p class="font-medium">{{ printer.pending }}</p>
+          </div>
         </div>
-        <div>
-          <span class="text-gray-500">Status</span>
-          <p>
-            <span
-              class="inline-block w-2 h-2 rounded-full mr-1"
-              :class="debug.printer.isReady ? 'bg-green-500' : 'bg-red-500'"
-            />
-            {{ debug.printer.isReady ? 'Ready' : 'Not Ready' }}
-          </p>
-        </div>
+      </div>
+
+      <p v-else class="text-sm text-gray-500">
+        No printers configured on the server. Browser-attached USB printers are configured
+        per browser and don't appear here.
+      </p>
+
+      <div v-if="debug?.printer" class="text-sm mt-4 pt-3 border-t">
+        <span class="text-gray-500">Default printer connection</span>
+        <p>
+          <span
+            class="inline-block w-2 h-2 rounded-full mr-1"
+            :class="debug.printer.isReady ? 'bg-green-500' : 'bg-red-500'"
+          />
+          {{ debug.printer.name ?? 'None' }} &middot; {{ debug.printer.isReady ? 'Ready' : 'Not ready' }}
+        </p>
       </div>
     </UCard>
 

@@ -10,11 +10,28 @@ import {
   MEDIA_TRACKINGS,
   MIN_LABEL_WIDTH_DOTS,
   MIN_LABEL_HEIGHT_DOTS,
-  MAX_LABEL_LENGTH_DOTS
+  MAX_LABEL_LENGTH_DOTS,
+  SERVER_PRINTER_TRANSPORTS
 } from './constants'
 
 /** Widest supported print head (4" at 600 DPI) */
 const MAX_LABEL_WIDTH_DOTS = 2400
+
+/** Print head resolutions the API accepts */
+const dpiSchema = z.union([z.literal(203), z.literal(300), z.literal(600)])
+
+/**
+ * Label geometry, in dots.
+ *
+ * Inches are always derived from dots and DPI server-side rather than accepted
+ * from the client, so the two can't be sent inconsistently.
+ */
+const labelGeometrySchema = z.object({
+  widthDots: z.number().int().min(MIN_LABEL_WIDTH_DOTS).max(MAX_LABEL_WIDTH_DOTS),
+  heightDots: z.number().int().min(MIN_LABEL_HEIGHT_DOTS).max(MAX_LABEL_LENGTH_DOTS),
+  dpi: dpiSchema.optional(),
+  name: z.string().max(100).optional()
+}).strict()
 
 // ─── Shared ─────────────────────────────────────────────────────────────────
 
@@ -36,9 +53,26 @@ const rotationEnum = z.enum(['N', 'R', 'I', 'B'])
  */
 const printTargetEnum = z.enum(['server', 'local'])
 
-/** Fields every print endpoint accepts */
-const printTargetFields = {
-  target: printTargetEnum.optional().default('server')
+/**
+ * How a request says which printer to use.
+ *
+ * `target` alone was enough when there was one server printer and one browser
+ * printer, and a single global label size that both were assumed to be loaded
+ * with. `printerId` replaces that guess with an actual choice.
+ *
+ * `labelSize` exists because a browser-attached printer's configuration lives in
+ * that browser — the server has nothing to look up, so the client sends the
+ * geometry it has configured for the device it's about to print on. For server
+ * printers it can be omitted and the printer's saved configuration is used.
+ */
+const printerSelectionFields = {
+  target: printTargetEnum.optional().default('server'),
+  /** Configured printer to print on. Omit to use the default printer. */
+  printerId: z.string().min(1).max(64).optional(),
+  /** Name to record on the job, for printers the server can't name itself. */
+  printerName: z.string().min(1).max(120).optional(),
+  /** Geometry to render for, overriding the printer's saved configuration. */
+  labelSize: labelGeometrySchema.optional()
 }
 
 // ─── Endpoint Schemas ───────────────────────────────────────────────────────
@@ -47,7 +81,7 @@ const printTargetFields = {
 export const textLabelSchema = z.object({
   lines: z.array(z.string().min(1)).min(1, 'At least one line required').max(20, 'Max 20 lines'),
   copies: z.number().int().min(1).max(10).optional(),
-  ...printTargetFields
+  ...printerSelectionFields
 }).strict()
 
 /** POST /api/print/barcode */
@@ -56,7 +90,7 @@ export const barcodeLabelSchema = z.object({
   type: barcodeTypeEnum.optional().default('CODE128'),
   text: z.string().optional(),
   height: z.number().int().min(10).max(1000).optional(),
-  ...printTargetFields
+  ...printerSelectionFields
 }).strict()
 
 /** POST /api/print/qr */
@@ -64,7 +98,7 @@ export const qrLabelSchema = z.object({
   data: z.string().min(1, 'QR code data is required'),
   text: z.string().optional(),
   magnification: z.number().int().min(1).max(10).optional().default(5),
-  ...printTargetFields
+  ...printerSelectionFields
 }).strict()
 
 /** POST /api/print/zpl — accepts raw string or JSON object */
@@ -72,7 +106,7 @@ export const zplSchema = z.union([
   z.string().min(1, 'ZPL commands required'),
   z.object({
     zpl: z.string().min(1, 'ZPL commands required'),
-    ...printTargetFields
+    ...printerSelectionFields
   }).strict()
 ])
 
@@ -137,7 +171,7 @@ const labelElementSchema = z.discriminatedUnion('type', [
 export const labelSchema = z.object({
   elements: z.array(labelElementSchema).min(1, 'At least one element required'),
   copies: z.number().int().min(1).max(10).optional(),
-  ...printTargetFields
+  ...printerSelectionFields
 }).strict()
 
 /** POST /api/render/zpl — build ZPL from elements without printing (for previews) */
@@ -237,12 +271,20 @@ export const templateSchema = z.object({
 
 // ─── Serial / batch printing ────────────────────────────────────────────────
 
-/** POST /api/print/serial — multi-copy with auto-incrementing serial numbers */
+/**
+ * POST /api/print/serial — multi-copy with auto-incrementing serial numbers.
+ *
+ * Server-side only: each copy is printed in turn, which the browser handoff has
+ * no way to express. It still takes a `printerId` so the run goes to a chosen
+ * printer rather than whichever one happens to be the default.
+ */
 export const serialLabelSchema = z.object({
   lines: z.array(z.string().min(1)).min(1, 'At least one line required').max(20, 'Max 20 lines'),
   copies: z.number().int().min(1).max(500, 'Max 500 copies'),
   serialStart: z.number().int().min(0).default(1),
-  serialFormat: z.enum(['#', '##', '###', '####', '#####']).optional().default('###')
+  serialFormat: z.enum(['#', '##', '###', '####', '#####']).optional().default('###'),
+  /** Configured printer to print on. Omit to use the default printer. */
+  printerId: z.string().min(1).max(64).optional()
 }).strict()
 
 // ─── Queue management ───────────────────────────────────────────────────────
@@ -273,9 +315,11 @@ export const jobResultSchema = z.object({
  * common case is an empty body meaning "apply the current label size".
  */
 export const printerConfigSchema = z.object({
+  /** Printer to configure. Omit to use the default printer. */
+  printerId: z.string().min(1).max(64).optional(),
   widthDots: z.number().int().min(MIN_LABEL_WIDTH_DOTS).max(MAX_LABEL_WIDTH_DOTS).optional(),
   heightDots: z.number().int().min(MIN_LABEL_HEIGHT_DOTS).max(MAX_LABEL_LENGTH_DOTS).optional(),
-  dpi: z.union([z.literal(203), z.literal(300), z.literal(600)]).optional(),
+  dpi: dpiSchema.optional(),
   tracking: z.enum(MEDIA_TRACKINGS).optional(),
   /** Black-mark offset in dots; only meaningful when tracking is 'mark' */
   markOffset: z.number().int().min(-240).max(566).optional(),
@@ -289,8 +333,46 @@ export const printerConfigSchema = z.object({
 
 /** POST /api/printer/calibrate */
 export const printerCalibrateSchema = z.object({
+  /** Printer to calibrate. Omit to use the default printer. */
+  printerId: z.string().min(1).max(64).optional(),
   target: printTargetEnum.optional().default('server')
 }).strict()
+
+// ─── Printer registry ───────────────────────────────────────────────────────
+//
+// Server-side printers, each with its own media configuration. Browser-attached
+// printers never reach these endpoints — the WebUSB pairing belongs to one
+// browser, so those profiles are stored client-side instead.
+
+const printerProfileFields = {
+  name: z.string().min(1, 'Printer name is required').max(120).optional(),
+  transport: z.enum(SERVER_PRINTER_TRANSPORTS).optional(),
+  /** CUPS queue name — required for `transport: 'cups'` */
+  cupsName: z.string().min(1).max(200).nullable().optional(),
+  /** CUPS device URI, or host:port for a networked printer */
+  deviceUri: z.string().max(500).nullable().optional(),
+  usbDeviceId: z.string().max(200).nullable().optional(),
+  /** Label stock loaded in this printer */
+  labelSize: labelGeometrySchema.optional(),
+  dpi: dpiSchema.optional(),
+  tracking: z.enum(MEDIA_TRACKINGS).optional(),
+  markOffset: z.number().int().min(-240).max(566).nullable().optional(),
+  /** Use this printer when a request doesn't name one */
+  isDefault: z.boolean().optional()
+}
+
+/** POST /api/printers — register a server printer */
+export const printerCreateSchema = z.object(printerProfileFields).strict()
+  // `transport` defaults to 'cups', and a CUPS printer without a queue name
+  // can't be printed to at all — better to reject it than to store a profile
+  // that silently never works.
+  .refine(data => (data.transport ?? 'cups') !== 'cups' || !!data.cupsName, {
+    message: 'cupsName is required for a CUPS printer',
+    path: ['cupsName']
+  })
+
+/** PUT /api/printers/:id — update any subset of a printer's configuration */
+export const printerUpdateSchema = z.object(printerProfileFields).strict()
 
 // ─── Type exports ───────────────────────────────────────────────────────────
 
@@ -304,6 +386,9 @@ export type ClearJobsRequest = z.infer<typeof clearJobsSchema>
 export type JobResultRequest = z.infer<typeof jobResultSchema>
 export type PrinterConfigRequest = z.infer<typeof printerConfigSchema>
 export type PrinterCalibrateRequest = z.infer<typeof printerCalibrateSchema>
+export type PrinterCreateRequest = z.infer<typeof printerCreateSchema>
+export type PrinterUpdateRequest = z.infer<typeof printerUpdateSchema>
+export type LabelGeometryRequest = z.infer<typeof labelGeometrySchema>
 export type TemplateDefinition = z.infer<typeof templateSchema>
 export type TemplateVariable = z.infer<typeof templateVariableSchema>
 export type TemplateElement = z.infer<typeof templateElementSchema>

@@ -28,13 +28,16 @@ After making changes, always verify in this order:
 ```
 test/
   unit/
-    zpl.test.ts           → ZPLBuilder, convenience functions (29 tests)
-    schemas.test.ts       → Zod validation schemas (40 tests)
-    label.test.ts         → Label templates (11 tests)
-    helpers.test.ts       → HTTP helpers (17 tests)
-    router.test.ts        → Route dispatch (6 tests)
+    zpl.test.ts           → ZPLBuilder, convenience functions
+    schemas.test.ts       → Zod validation schemas, incl. printer selection
+    label.test.ts         → Label templates
+    helpers.test.ts       → HTTP helpers
+    router.test.ts        → Route dispatch
   db/
-    database.test.ts      → SQLite layer — migrations, CRUD, job lifecycle, settings (14 tests)
+    database.test.ts      → SQLite layer — migrations, CRUD, job lifecycle, settings
+    job-label-size.test.ts→ Per-job label geometry snapshot
+    printer-repo.test.ts  → Per-printer config, the default printer, adopting discovery
+    printer-routing.test.ts → Geometry resolution + the multi-printer queue
   integration/            → (planned: full API endpoints, queue processing)
   properties/            → (planned: ZPL generation round-trip, serial number formatting)
 ```

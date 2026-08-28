@@ -1,5 +1,8 @@
 <script setup lang="ts">
 const api = useApi();
+// Resolves a job's printer_id to a name, so the detail panel names the printer
+// rather than showing a raw id.
+const printers = usePrinters();
 
 const statusFilter = ref('pending');
 const { data, refresh } = useAsyncData('queue-jobs', () =>
@@ -14,6 +17,7 @@ watch(statusFilter, () => refresh());
 // and threw a ReferenceError here, taking the whole page down with it.
 let pollInterval: ReturnType<typeof setInterval> | null = null;
 onMounted(() => {
+  printers.load();
   pollInterval = setInterval(() => refresh(), 5000);
 });
 onUnmounted(() => {
@@ -133,7 +137,9 @@ function formatDate(d: string) {
             </div>
             <div>
               <span class="text-gray-500">Printer</span>
-              <p class="font-medium">{{ jobDetail.job.printer_name || '—' }}</p>
+              <p class="font-medium">
+                {{ printers.get(jobDetail.job.printer_id)?.name ?? jobDetail.job.printer_name ?? '—' }}
+              </p>
             </div>
             <div>
               <span class="text-gray-500">CUPS Job</span>

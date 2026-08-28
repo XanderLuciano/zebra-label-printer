@@ -1,35 +1,53 @@
 /**
  * Print queue — reliable job queue with persistence.
  *
- * When the printer is unavailable, jobs are queued in SQLite and
- * automatically processed when connectivity is restored.
+ * When a printer is unavailable, jobs are queued in SQLite and automatically
+ * processed when connectivity is restored.
  *
  * Design:
  *   - Job submission always succeeds (creates DB record)
  *   - Immediate print attempt; falls back to queue on failure
  *   - Background processor polls for printer availability
  *   - All state transitions logged to job_logs
+ *
+ * The queue is multi-printer: every job records the printer it's bound for, and
+ * the processor resolves that per job rather than holding one connection. That
+ * matters for correctness, not just capacity — the head of the queue may be
+ * waiting on an offline printer while another sits idle, and a job queued for a
+ * 2×1" printer must not be printed on the 4×6" one just because that's the one
+ * that came back.
  */
 
 import type { Printer } from './printer'
 import {
   createJob,
-  getNextPendingJob,
+  listPendingJobs,
   updateJobStatus,
   claimJob,
   setJobZpl,
   countPendingJobs,
   addJobLog,
   getJobLabelSize,
-  failStalePrintingJobs,
+  failStaleLocalPrintingJobs,
   type JobType,
-  type JobLabelSize
+  type JobLabelSize,
+  type PrintJob
 } from './db/print-job-repo'
+import { recordPrinterEvent, getLabelSize } from './db/settings-repo'
 import {
-  recordPrinterEvent,
-  getLabelSize
-} from './db/settings-repo'
-import { DEFAULT_DPI, LOCAL_PRINTER_NAME, LOCAL_PRINT_TIMEOUT_SECONDS } from './constants'
+  isUnresolved,
+  resolveJobLabelSize,
+  type LabelSizeSource,
+  type ResolvedPrinter,
+  type UnresolvedReason
+} from './printer-registry'
+import {
+  DEFAULT_DPI,
+  LOCAL_PRINTER_NAME,
+  LOCAL_PRINT_TIMEOUT_SECONDS,
+  PENDING_SCAN_LIMIT,
+  QUEUE_CHECK_INTERVAL_MS
+} from './constants'
 
 export interface QueuedPrintResult {
   success: boolean;
@@ -49,44 +67,89 @@ export interface QueuedPrintResult {
  */
 export type ZplGenerator = (labelSize: JobLabelSize) => string
 
-/** Read the current configured label size as a job snapshot. */
+/**
+ * Read the legacy global label size as a job snapshot.
+ *
+ * Only reached when no printer is configured — a fresh install, or a library
+ * caller with no registry. Prefer `resolveJobLabelSize()`, which asks the printer
+ * that's actually going to print the label.
+ */
 export function currentLabelSize(): JobLabelSize {
   const size = getLabelSize()
   return { widthDots: size.widthDots, heightDots: size.heightDots, dpi: DEFAULT_DPI }
 }
 
+/**
+ * The slice of `PrinterRegistry` the queue depends on.
+ *
+ * Stated as an interface so the queue can be exercised without CUPS, and so it
+ * has no say in how connections are opened or cached.
+ */
+export interface QueuePrinterSource extends LabelSizeSource {
+  resolve(id?: string | null): Promise<ResolvedPrinter | { reason: UnresolvedReason }>
+  resolveForJob(
+    job: Pick<PrintJob, 'printer_id' | 'printer_name'>
+  ): Promise<ResolvedPrinter | { reason: UnresolvedReason }>
+}
+
+/** Which printer a job is for, and what geometry to render it at. */
+export interface SubmitOptions {
+  /** Configured printer to print on. Omit to use the default printer. */
+  printerId?: string | null
+  /** Name to record on the job. Defaults to the resolved printer's name. */
+  printerName?: string | null
+  /**
+   * Geometry to render for, overriding the printer's saved configuration.
+   *
+   * Browser-attached printers keep their config client-side, so the browser sends
+   * its geometry along with the request.
+   */
+  labelSize?: { widthDots: number; heightDots: number; dpi?: number } | null
+}
+
 export class PrintQueue {
-  private printer: Printer
+  private printers: QueuePrinterSource
   private processorInterval: ReturnType<typeof setInterval> | null = null
   private processing = false
   private checkIntervalMs: number
 
-  constructor(printer: Printer, checkIntervalMs = 5000) {
-    this.printer = printer
+  constructor(printers: QueuePrinterSource, checkIntervalMs = QUEUE_CHECK_INTERVAL_MS) {
+    this.printers = printers
     this.checkIntervalMs = checkIntervalMs
   }
 
   /**
    * Submit a print job. Tries to print immediately; queues if unavailable.
    *
-   * The label geometry in effect right now is frozen onto the job record and
-   * handed to `zplGenerator`, so the stored ZPL, the history preview, and the
-   * physical output all describe the same label.
+   * The geometry of the printer this job is bound for is frozen onto the job
+   * record and handed to `zplGenerator`, so the stored ZPL, the history preview,
+   * and the physical output all describe the same label — even if that printer is
+   * reconfigured before a queued job goes out.
    */
   async submit(
     jobType: JobType,
     requestData: unknown,
     zplGenerator: ZplGenerator,
-    printerName?: string
+    options: SubmitOptions = {}
   ): Promise<QueuedPrintResult> {
-    const labelSize = currentLabelSize()
+    const resolved = await this.printers.resolve(options.printerId)
+    const profile = isUnresolved(resolved) ? null : resolved.profile
+    const printer = isUnresolved(resolved) ? null : resolved.printer
 
-    // Always persist the job first
-    const job = createJob(jobType, requestData, undefined, printerName ?? this.printer.name, labelSize)
+    const printerId = options.printerId ?? profile?.id ?? null
+    const printerName = options.printerName ?? profile?.name ?? profile?.cupsName ?? null
+    const labelSize = resolveJobLabelSize(this.printers, {
+      printerId,
+      labelSize: options.labelSize
+    })
+
+    // Always persist the job first, even when the printer can't be reached — the
+    // record is what lets it go out later.
+    const job = createJob(jobType, requestData, undefined, printerName, labelSize, printerId)
 
     // Try immediate print
-    const isReady = await this.printer.isReady()
-    if (isReady) {
+    const isReady = printer ? await printer.isReady() : false
+    if (printer && isReady) {
       // Atomically claim the job so the background processor can't also grab it.
       // Without this, submit() and processNext() can race and print the same
       // job (and serial number) twice.
@@ -98,7 +161,7 @@ export class PrintQueue {
         const zpl = zplGenerator(labelSize)
         setJobZpl(job.id, zpl)
 
-        const result = await this.printer.print(zpl)
+        const result = await printer.print(zpl)
         if (result.success) {
           updateJobStatus(job.id, 'completed', {
             cupsJobId: result.jobId
@@ -124,8 +187,13 @@ export class PrintQueue {
     }
 
     // Queue for later
-    addJobLog(job.id, 'info', 'Queued — printer not ready')
-    recordPrinterEvent(this.printer.name, 'disconnected', 'Job queued: printer unavailable')
+    const reason = isUnresolved(resolved)
+      ? `Queued — ${resolved.reason === 'unavailable' ? 'printer unreachable' : resolved.reason}`
+      : 'Queued — printer not ready'
+    addJobLog(job.id, 'info', reason)
+    if (printerName) {
+      recordPrinterEvent(printerName, 'disconnected', 'Job queued: printer unavailable')
+    }
 
     return { success: true, jobId: job.id, queued: true, labelSize }
   }
@@ -137,16 +205,24 @@ export class PrintQueue {
    * The job is persisted exactly like a server-side print — same snapshot, same
    * history entry — but no CUPS job is spawned. The caller reports the outcome
    * via `reportExternalResult()` once the transfer finishes.
+   *
+   * A browser-attached printer's configuration lives in that browser, so
+   * `options.labelSize` is how its geometry reaches the job record. Without it the
+   * job falls back to the default printer's size, which is very likely wrong.
    */
   prepareExternal(
     jobType: JobType,
     requestData: unknown,
     zplGenerator: ZplGenerator,
-    printerName: string = LOCAL_PRINTER_NAME
+    options: SubmitOptions = {}
   ): { jobId: string; zpl: string; labelSize: JobLabelSize } {
-    const labelSize = currentLabelSize()
+    const printerName = options.printerName ?? LOCAL_PRINTER_NAME
+    const labelSize = resolveJobLabelSize(this.printers, {
+      printerId: options.printerId,
+      labelSize: options.labelSize
+    })
     const zpl = zplGenerator(labelSize)
-    const job = createJob(jobType, requestData, zpl, printerName, labelSize)
+    const job = createJob(jobType, requestData, zpl, printerName, labelSize, options.printerId ?? null)
     // Claim it immediately so the background processor never prints it on the
     // server as well. reportExternalResult() closes it out; if that never
     // arrives, reapStaleLocalJobs() fails it.
@@ -169,7 +245,7 @@ export class PrintQueue {
    * 'printing' forever. Runs as part of the normal processor tick.
    */
   reapStaleLocalJobs(): number {
-    return failStalePrintingJobs(LOCAL_PRINTER_NAME, LOCAL_PRINT_TIMEOUT_SECONDS)
+    return failStaleLocalPrintingJobs(LOCAL_PRINT_TIMEOUT_SECONDS)
   }
 
   /**
@@ -201,7 +277,18 @@ export class PrintQueue {
   }
 
   /**
-   * Process the next pending job, if any.
+   * Print the next pending job that has a ready printer.
+   *
+   * Walks a window of the queue rather than only its head. With one printer those
+   * are the same thing, but with several, the oldest job may be waiting on a
+   * printer that's switched off while the next job's printer is idle — taking only
+   * the head would stall the whole queue behind it.
+   *
+   * Jobs whose printer can't be resolved are skipped, not reassigned: printing a
+   * job on a different printer than it was rendered for would put it on the wrong
+   * label stock.
+   *
+   * @returns true if a job was printed.
    */
   async processNext(): Promise<boolean> {
     if (this.processing) return false
@@ -211,52 +298,86 @@ export class PrintQueue {
       // Independent of printer state: these jobs were never ours to print.
       this.reapStaleLocalJobs()
 
-      const isReady = await this.printer.isReady()
-      if (!isReady) return false
+      const pending = listPendingJobs(PENDING_SCAN_LIMIT)
+      if (pending.length === 0) return false
 
-      const job = getNextPendingJob()
-      if (!job) return false
+      // isReady() shells out to CUPS, so cache the answer for this tick rather
+      // than re-asking once per queued job.
+      const readiness = new Map<string, boolean>()
 
-      // Atomically claim the job. If another caller (e.g. submit) already
-      // claimed it between getNextPendingJob() and here, skip it.
-      if (!claimJob(job.id)) return false
+      for (const job of pending) {
+        const resolved = await this.printers.resolveForJob(job)
+        if (isUnresolved(resolved)) continue
 
-      addJobLog(job.id, 'info', 'Processing from queue')
-
-      // Generate ZPL if not already done
-      let zpl = job.zpl_commands
-      if (!zpl) {
-        // Reconstruct from request data
-        try {
-          const data = JSON.parse(job.request_data)
-          // Rebuild against the size frozen on the job, not the current
-          // setting — otherwise a job queued on 2×1" stock prints at whatever
-          // size happens to be configured when the printer comes back.
-          zpl = await this.rebuildZpl(job.job_type, data, getJobLabelSize(job) ?? currentLabelSize())
-          if (zpl) setJobZpl(job.id, zpl)
-        } catch {
-          updateJobStatus(job.id, 'failed', {
-            errorMessage: 'Failed to rebuild ZPL from queued request'
-          })
-          return false
+        const { profile, printer } = resolved
+        let ready = readiness.get(profile.id)
+        if (ready === undefined) {
+          ready = await printer.isReady()
+          readiness.set(profile.id, ready)
         }
+        if (!ready) continue
+
+        if (await this.printJob(job, printer, profile.name)) return true
       }
 
-      const result = await this.printer.print(zpl!)
-      if (result.success) {
-        updateJobStatus(job.id, 'completed', { cupsJobId: result.jobId })
-        recordPrinterEvent(this.printer.name, 'recovered', `Job ${job.id} printed from queue`)
-        return true
-      } else {
-        updateJobStatus(job.id, 'failed', { errorMessage: result.error })
-        return false
-      }
+      return false
     } catch (err) {
       console.error('Queue process error:', err)
       return false
     } finally {
       this.processing = false
     }
+  }
+
+  /**
+   * Claim and print one queued job on a specific printer.
+   *
+   * @returns true if the job was claimed and printed successfully.
+   */
+  private async printJob(job: PrintJob, printer: Printer, printerName: string): Promise<boolean> {
+    // Atomically claim the job. If another caller (e.g. submit) already claimed
+    // it between the pending scan and here, skip it.
+    if (!claimJob(job.id)) return false
+
+    addJobLog(job.id, 'info', `Processing from queue on '${printerName}'`)
+
+    // Generate ZPL if not already done
+    let zpl = job.zpl_commands
+    if (!zpl) {
+      // Reconstruct from request data
+      try {
+        const data = JSON.parse(job.request_data)
+        // Rebuild against the size frozen on the job, not the printer's current
+        // configuration — otherwise a job queued on 2×1" stock prints at whatever
+        // size happens to be set when the printer comes back.
+        zpl = await this.rebuildZpl(
+          job.job_type,
+          data,
+          getJobLabelSize(job) ?? this.printers.labelSizeFor(job.printer_id) ?? currentLabelSize()
+        )
+        if (zpl) setJobZpl(job.id, zpl)
+      } catch {
+        updateJobStatus(job.id, 'failed', {
+          errorMessage: 'Failed to rebuild ZPL from queued request'
+        })
+        return false
+      }
+    }
+
+    if (!zpl) {
+      updateJobStatus(job.id, 'failed', { errorMessage: 'No ZPL to print' })
+      return false
+    }
+
+    const result = await printer.print(zpl)
+    if (result.success) {
+      updateJobStatus(job.id, 'completed', { cupsJobId: result.jobId })
+      recordPrinterEvent(printerName, 'recovered', `Job ${job.id} printed from queue`)
+      return true
+    }
+
+    updateJobStatus(job.id, 'failed', { errorMessage: result.error })
+    return false
   }
 
   /**

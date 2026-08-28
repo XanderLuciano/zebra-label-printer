@@ -18,7 +18,7 @@ import {
 
 const api = useApi()
 const toast = useToast()
-const { printLabel, load: loadPrintTarget, target } = usePrintTarget()
+const { printLabel, load: loadPrinters, printer: activePrinter } = usePrintTarget()
 
 // ─── State ──────────────────────────────────────────────────────────────────
 const templates = ref<StoredTemplate[]>([])
@@ -216,7 +216,7 @@ async function print() {
 }
 
 onMounted(() => {
-  loadPrintTarget()
+  loadPrinters()
   refreshList()
 })
 </script>
@@ -230,8 +230,8 @@ onMounted(() => {
       </h1>
       <div class="flex-1" />
       <UBadge color="neutral" variant="soft" size="sm">
-        <UIcon :name="target === 'local' ? 'i-lucide-usb' : 'i-lucide-server'" class="mr-1" />
-        {{ target === 'local' ? 'Local USB printer' : 'Server queue' }}
+        <UIcon :name="activePrinter?.connection === 'local' ? 'i-lucide-usb' : 'i-lucide-server'" class="mr-1" />
+        {{ activePrinter ? `${activePrinter.name} · ${activePrinter.labelSize.name}` : 'No printer set up' }}
       </UBadge>
       <UButton
         icon="i-lucide-pen-tool"

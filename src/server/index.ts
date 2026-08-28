@@ -12,7 +12,8 @@ import { createServer } from 'http'
 import type { Server as NetServer } from 'net'
 import { createReadStream, existsSync, statSync } from 'fs'
 import { join, extname } from 'path'
-import { Printer } from '../printer'
+// Type-only: connections are opened by the PrinterRegistry now, not here.
+import type { Printer } from '../printer'
 import { PrintQueue } from '../queue'
 import { startRawTcpServer } from '../raw-tcp'
 import { json } from './helpers'
@@ -20,7 +21,7 @@ import type { RouteTable, Handler } from './router'
 import { findHandler, sendNotFound, printRoutes } from './router'
 import {
   healthHandler,
-  printersHandler,
+  printersDiscoveredHandler,
   openApiHandler,
   docsHandler,
   jobsListHandler,
@@ -51,6 +52,14 @@ import {
   printerCalibrateHandler
 } from './handlers/printer-routes'
 import {
+  printersListHandler,
+  printerGetHandler,
+  printerCreateHandler,
+  printerUpdateHandler,
+  printerDeleteHandler,
+  printerSetDefaultHandler
+} from './handlers/printer-registry-routes'
+import {
   templatesListHandler,
   templateGetHandler,
   templateCreateHandler,
@@ -59,6 +68,7 @@ import {
   renderZplHandler
 } from './handlers/template-routes'
 import { closeDb, getDb } from '../db/database'
+import { PrinterRegistry, isUnresolved } from '../printer-registry'
 import { seedBuiltinTemplates } from '../db/template-seed'
 import { printJobs } from '../db/schema'
 import { eq } from 'drizzle-orm'
@@ -76,7 +86,15 @@ import {
 
 export class WebhookServer {
   private httpServer: ReturnType<typeof createServer> | null = null
+  /**
+   * The default printer's connection.
+   *
+   * Kept as a convenience for handlers that don't name a printer, and null when
+   * nothing is configured — a browser-only setup, where every label goes out over
+   * WebUSB, never needs a printer here.
+   */
   private printer: Printer | null = null
+  private registry: PrinterRegistry = new PrinterRegistry()
   private queue: PrintQueue | null = null
   private config: Required<WebhookConfig>
   private routes: RouteTable
@@ -97,6 +115,7 @@ export class WebhookServer {
   private buildRoutes(): RouteTable {
     const { apiKey } = this.config
     const getQueue = () => this.queue
+    const getRegistry = () => this.registry
     const table: RouteTable = new Map()
 
     // ── GET routes ──────────────────────────────────────────────────────────
@@ -104,9 +123,14 @@ export class WebhookServer {
 
     // System
     get.set('/api/health', healthHandler)
-    get.set('/api/printers', printersHandler(apiKey))
     get.set('/api/docs/openapi.json', openApiHandler)
     get.set('/api/docs', docsHandler)
+
+    // Printers. /api/printers is the *configured* list with each printer's media
+    // config; /api/printers/discovered is the raw CUPS view.
+    // /api/printers/:id is matched by prefix below.
+    get.set('/api/printers', printersListHandler(apiKey))
+    get.set('/api/printers/discovered', printersDiscoveredHandler(apiKey))
 
     // Jobs
     get.set('/api/jobs', jobsListHandler(apiKey))
@@ -131,20 +155,23 @@ export class WebhookServer {
     // ── POST routes ─────────────────────────────────────────────────────────
     const post = new Map<string, Handler>()
 
-    post.set('/api/print/text', printTextHandler(apiKey, getQueue))
-    post.set('/api/print/barcode', printBarcodeHandler(apiKey, getQueue))
-    post.set('/api/print/qr', printQrHandler(apiKey, getQueue))
-    post.set('/api/print/zpl', printZplHandler(apiKey, getQueue))
-    post.set('/api/print/label', printLabelHandler(apiKey, getQueue))
-    post.set('/api/print/serial', printSerialHandler(apiKey, getQueue))
+    post.set('/api/print/text', printTextHandler(apiKey, getQueue, getRegistry))
+    post.set('/api/print/barcode', printBarcodeHandler(apiKey, getQueue, getRegistry))
+    post.set('/api/print/qr', printQrHandler(apiKey, getQueue, getRegistry))
+    post.set('/api/print/zpl', printZplHandler(apiKey, getQueue, getRegistry))
+    post.set('/api/print/label', printLabelHandler(apiKey, getQueue, getRegistry))
+    post.set('/api/print/serial', printSerialHandler(apiKey, getQueue, getRegistry))
 
     // Templates + rendering
     post.set('/api/templates', templateCreateHandler(apiKey))
     post.set('/api/render/zpl', renderZplHandler(apiKey))
 
+    // Printer registry (/api/printers/:id/default matched by prefix below)
+    post.set('/api/printers', printerCreateHandler(apiKey, getRegistry))
+
     // Printer media configuration
-    post.set('/api/printer/configure', printerConfigureHandler(apiKey))
-    post.set('/api/printer/calibrate', printerCalibrateHandler(apiKey))
+    post.set('/api/printer/configure', printerConfigureHandler(apiKey, getRegistry))
+    post.set('/api/printer/calibrate', printerCalibrateHandler(apiKey, getRegistry))
 
     // Job actions
     post.set('/api/jobs/cancel', jobCancelHandler(apiKey, getQueue))
@@ -210,6 +237,25 @@ export class WebhookServer {
       }
     }
 
+    // Pattern: POST /api/printers/:id/default
+    if (method === 'POST' && pathname.startsWith('/api/printers/') && pathname.endsWith('/default')) {
+      const id = decodeURIComponent(pathname.split('/')[3] ?? '')
+      if (id) return printerSetDefaultHandler(this.config.apiKey, id)
+    }
+
+    // Pattern: /api/printers/:id (GET, PUT, DELETE).
+    // '/api/printers/discovered' is an exact GET route, matched above.
+    if (pathname.startsWith('/api/printers/')) {
+      const parts = pathname.split('/')
+      if (parts.length === 4 && parts[3]) {
+        const id = decodeURIComponent(parts[3])
+        const getRegistry = () => this.registry
+        if (method === 'GET') return printerGetHandler(this.config.apiKey, id)
+        if (method === 'PUT') return printerUpdateHandler(this.config.apiKey, id, getRegistry)
+        if (method === 'DELETE') return printerDeleteHandler(this.config.apiKey, id, getRegistry)
+      }
+    }
+
     // Pattern: /api/templates/:id (GET, PUT, DELETE)
     if (pathname.startsWith('/api/templates/')) {
       const parts = pathname.split('/')
@@ -259,7 +305,7 @@ export class WebhookServer {
     // The handlers themselves check if printer is available when needed
 
     try {
-      await handler(req, res, this.printer!)
+      await handler(req, res, this.printer)
     } catch (err) {
       console.error('Handler error:', err)
       if (!res.headersSent) {
@@ -269,22 +315,61 @@ export class WebhookServer {
   }
 
   /**
-   * Connect to a printer, initialize the queue, and start the HTTP + TCP servers.
+   * Populate the printer registry and connect the default printer.
+   *
+   * Discovered CUPS printers are registered if they aren't already, so an existing
+   * install comes up with its printer configured rather than an empty list.
+   *
+   * Starting without any printer is allowed: someone printing only to a
+   * browser-attached USB printer has no CUPS queue here, and refusing to start
+   * would lock them out of the app entirely.
    */
-  async start(printer?: Printer, printerName?: string): Promise<Printer> {
+  private async initPrinters(printerName?: string): Promise<void> {
+    const { adopted } = await this.registry.sync()
+    if (adopted.length > 0) {
+      console.log(`   Registered ${adopted.length} printer${adopted.length > 1 ? 's' : ''} from CUPS`)
+    }
+
+    // An explicitly requested printer wins over the stored default.
+    const requested = printerName || this.config.defaultPrinter || ''
+    if (requested) {
+      const { getPrinterProfileByCupsName } = await import('../db/printer-repo')
+      const profile = getPrinterProfileByCupsName(requested)
+      if (profile) {
+        this.registry.invalidate(profile.id)
+        const resolved = await this.registry.resolve(profile.id)
+        if (!isUnresolved(resolved)) {
+          this.printer = resolved.printer
+          return
+        }
+      }
+    }
+
+    const resolved = await this.registry.resolve()
+    this.printer = isUnresolved(resolved) ? null : resolved.printer
+  }
+
+  /**
+   * Connect to a printer, initialize the queue, and start the HTTP + TCP servers.
+   *
+   * @param printer - Use this connection as the default instead of resolving one.
+   * @param printerName - CUPS name of the printer to prefer as the default.
+   * @returns the default printer connection, or null when none is configured.
+   */
+  async start(printer?: Printer, printerName?: string): Promise<Printer | null> {
     if (printer) {
       this.printer = printer
     } else {
-      this.printer = await Printer.connectOrAuto(
-        printerName || this.config.defaultPrinter || undefined
-      )
+      await this.initPrinters(printerName)
     }
 
-    // Build routes now that we have printer
+    // Build routes now that the registry is populated
     this.routes = this.buildRoutes()
 
-    // Initialize the print queue
-    this.queue = new PrintQueue(this.printer)
+    // Initialize the print queue. It resolves each job's printer through the
+    // registry rather than holding one connection, so jobs for different printers
+    // don't block each other.
+    this.queue = new PrintQueue(this.registry)
     this.queue.start()
 
     // Offer the built-in example templates once, so a fresh install has
@@ -316,7 +401,18 @@ export class WebhookServer {
         const addr = this.config.host === '0.0.0.0' ? 'localhost' : this.config.host
         console.log('\n🦓  Zebra Label Printer API')
         console.log(`   Server:  http://${addr}:${this.config.port}`)
-        console.log(`   Printer: ${this.printer!.name}`)
+
+        const profiles = this.registry.profiles()
+        if (profiles.length === 0) {
+          console.log('   Printer: none configured — add one in Settings, or print from a browser over WebUSB')
+        } else {
+          for (const profile of profiles) {
+            const marker = profile.isDefault ? '*' : ' '
+            const size = `${profile.labelSize.widthInches}×${profile.labelSize.heightInches}"`
+            console.log(`   Printer:${marker}${profile.name} (${profile.transport}, ${size} @ ${profile.dpi} DPI)`)
+          }
+        }
+
         console.log(`   Queue:   ${this.queue!.getPendingCount()} pending jobs`)
         console.log(`   Docs:    http://${addr}:${this.config.port}/api/docs\n`)
         printRoutes(this.routes)
@@ -327,13 +423,13 @@ export class WebhookServer {
         if (tcpPort > 0) {
           const tcpHost = this.config.host
           try {
-            this.tcpServer = startRawTcpServer(tcpPort, tcpHost, () => this.queue, this.printer!)
+            this.tcpServer = startRawTcpServer(tcpPort, tcpHost, () => this.queue, () => this.printer)
           } catch (err) {
             console.error(`   \u26a0 Failed to start raw TCP on port ${tcpPort}: ${(err as Error).message}`)
           }
         }
 
-        resolve(this.printer!)
+        resolve(this.printer)
       })
 
       this.httpServer.on('error', reject)

@@ -32,12 +32,53 @@ import type {
   ClearJobsRequest,
   JobResultRequest
 } from '../../schemas'
-import type { PrintQueue, ZplGenerator } from '../../queue'
-import { currentLabelSize } from '../../queue'
+import type { PrintQueue, SubmitOptions, ZplGenerator } from '../../queue'
 import type { JobType, JobLabelSize } from '../../db/print-job-repo'
 import type { Printer } from '../../printer'
+import type { PrinterRegistry } from '../../printer-registry'
+import { isUnresolved, resolveJobLabelSize, unresolvedMessage } from '../../printer-registry'
+import { isLocalPrinterId } from '../../db/printer-repo'
 import type { PrintTarget } from '../../constants'
 import { LOCAL_PRINTER_NAME } from '../../constants'
+
+type GetRegistry = () => PrinterRegistry | null
+
+/**
+ * Which printer a request wants, as every print schema expresses it.
+ *
+ * `printerId` is the real answer; `target` is the older, coarser one that only
+ * distinguished "this server" from "the browser". Both are accepted so existing
+ * callers keep working.
+ */
+interface PrinterSelection extends SubmitOptions {
+  target: PrintTarget
+}
+
+/** Pull the printer selection out of a validated request body. */
+function selectionOf(data: {
+  target: PrintTarget
+  printerId?: string
+  printerName?: string
+  labelSize?: { widthDots: number; heightDots: number; dpi?: number }
+}): PrinterSelection {
+  return {
+    target: data.target,
+    printerId: data.printerId ?? null,
+    printerName: data.printerName ?? null,
+    labelSize: data.labelSize ?? null
+  }
+}
+
+/**
+ * Does this request belong to a printer the browser owns?
+ *
+ * A `local_` printer id is decisive on its own: only the browser holding that
+ * WebUSB handle can print to it, so the ZPL has to go back to the caller no
+ * matter what `target` says.
+ */
+function isLocalPrint(selection: PrinterSelection): boolean {
+  return selection.target === 'local' || isLocalPrinterId(selection.printerId)
+}
 
 /**
  * Route a print request to the queue, a local (browser USB) printer, or
@@ -46,44 +87,77 @@ import { LOCAL_PRINTER_NAME } from '../../constants'
  * Every path records a job with a label-size snapshot, so history is consistent
  * no matter where the label physically came out.
  *
- * @param target - 'local' persists the job and returns `zpl` for the caller to
+ * @param selection - Which printer to use. A `local_` printer id, or
+ *   `target: 'local'`, persists the job and returns `zpl` for the caller to
  *   transmit over WebUSB; the caller then reports back via /api/jobs/:id/result.
  */
 async function dispatchPrint(
   res: ServerResponse,
-  printer: Printer,
+  printer: Printer | null,
   queue: PrintQueue | null,
+  registry: PrinterRegistry | null,
   jobType: JobType,
   requestData: unknown,
-  target: PrintTarget,
+  selection: PrinterSelection,
   zplGen: ZplGenerator
 ): Promise<void> {
   try {
-    if (target === 'local') {
+    if (isLocalPrint(selection)) {
       if (!queue) {
         json(res, { error: 'Local printing requires the job queue' }, 503)
         return
       }
-      const { jobId, zpl, labelSize } = queue.prepareExternal(jobType, requestData, zplGen, LOCAL_PRINTER_NAME)
-      json(res, { success: true, jobId, zpl, target: 'local', queued: false, labelSize })
+      const { jobId, zpl, labelSize } = queue.prepareExternal(jobType, requestData, zplGen, {
+        printerId: selection.printerId,
+        printerName: selection.printerName ?? LOCAL_PRINTER_NAME,
+        labelSize: selection.labelSize
+      })
+      json(res, {
+        success: true,
+        jobId,
+        zpl,
+        target: 'local',
+        queued: false,
+        labelSize,
+        printerId: selection.printerId ?? null
+      })
       return
     }
 
+    // Reject an unknown printer rather than quietly printing somewhere else — the
+    // whole point of naming a printer is that the label lands on the right stock.
+    if (registry && selection.printerId) {
+      const resolved = await registry.resolve(selection.printerId)
+      if (isUnresolved(resolved) && resolved.reason === 'unknown-printer') {
+        json(res, { error: unresolvedMessage(resolved.reason), printerId: selection.printerId }, 404)
+        return
+      }
+    }
+
     if (queue) {
-      const result = await queue.submit(jobType, requestData, zplGen)
+      const result = await queue.submit(jobType, requestData, zplGen, {
+        printerId: selection.printerId,
+        printerName: selection.printerName,
+        labelSize: selection.labelSize
+      })
       json(res, {
         success: result.success,
         jobId: result.jobId,
         queued: result.queued,
         target: 'server',
         labelSize: result.labelSize,
+        printerId: selection.printerId ?? registry?.defaultProfile()?.id ?? null,
         ...(result.error ? { error: result.error } : {})
       }, result.success ? 200 : 500)
       return
     }
 
     // No queue (library/CLI usage): print directly, no job record
-    const labelSize = currentLabelSize()
+    const labelSize = resolveJobLabelSize(registry, selection)
+    if (!printer) {
+      json(res, { error: 'No printer connected' }, 503)
+      return
+    }
     const result = await printer.print(zplGen(labelSize))
     json(res, { ...result, labelSize }, result.success ? 200 : 500)
   } catch (err) {
@@ -111,28 +185,36 @@ function buildElementZpl(
 }
 
 /** POST /api/print/text — print a multi-line text label */
-export function printTextHandler(apiKey: string, getQueue: () => PrintQueue | null): Handler {
+export function printTextHandler(
+  apiKey: string,
+  getQueue: () => PrintQueue | null,
+  getRegistry: GetRegistry
+): Handler {
   return async (req, res, printer) => {
     if (!checkAuth(req, res, apiKey)) return
 
     const data = await validate<TextLabelRequest>(req, res, textLabelSchema)
     if (!data) return
 
-    await dispatchPrint(res, printer, getQueue(), 'text', data, data.target, size =>
+    await dispatchPrint(res, printer, getQueue(), getRegistry(), 'text', data, selectionOf(data), size =>
       textLabel(data.lines, { widthDots: size.widthDots, heightDots: size.heightDots })
     )
   }
 }
 
 /** POST /api/print/barcode — print a barcode label */
-export function printBarcodeHandler(apiKey: string, getQueue: () => PrintQueue | null): Handler {
+export function printBarcodeHandler(
+  apiKey: string,
+  getQueue: () => PrintQueue | null,
+  getRegistry: GetRegistry
+): Handler {
   return async (req, res, printer) => {
     if (!checkAuth(req, res, apiKey)) return
 
     const data = await validate<BarcodeLabelRequest>(req, res, barcodeLabelSchema)
     if (!data) return
 
-    await dispatchPrint(res, printer, getQueue(), 'barcode', data, data.target, size =>
+    await dispatchPrint(res, printer, getQueue(), getRegistry(), 'barcode', data, selectionOf(data), size =>
       barcodeLabel(data.data, data.type, data.text, {
         barcodeHeight: data.height,
         widthDots: size.widthDots,
@@ -143,14 +225,18 @@ export function printBarcodeHandler(apiKey: string, getQueue: () => PrintQueue |
 }
 
 /** POST /api/print/qr — print a QR code label */
-export function printQrHandler(apiKey: string, getQueue: () => PrintQueue | null): Handler {
+export function printQrHandler(
+  apiKey: string,
+  getQueue: () => PrintQueue | null,
+  getRegistry: GetRegistry
+): Handler {
   return async (req, res, printer) => {
     if (!checkAuth(req, res, apiKey)) return
 
     const data = await validate<QRLabelRequest>(req, res, qrLabelSchema)
     if (!data) return
 
-    await dispatchPrint(res, printer, getQueue(), 'qr', data, data.target, size =>
+    await dispatchPrint(res, printer, getQueue(), getRegistry(), 'qr', data, selectionOf(data), size =>
       qrLabel(data.data, data.text, {
         magnification: data.magnification,
         widthDots: size.widthDots,
@@ -161,24 +247,38 @@ export function printQrHandler(apiKey: string, getQueue: () => PrintQueue | null
 }
 
 /** POST /api/print/zpl — print raw ZPL (accepts text/plain or JSON) */
-export function printZplHandler(apiKey: string, getQueue: () => PrintQueue | null): Handler {
+export function printZplHandler(
+  apiKey: string,
+  getQueue: () => PrintQueue | null,
+  getRegistry: GetRegistry
+): Handler {
   return async (req, res, printer) => {
     if (!checkAuth(req, res, apiKey)) return
 
     const raw = await readBody(req)
 
     let zpl: string
-    let target: PrintTarget = 'server'
+    let selection: PrinterSelection = { target: 'server', printerId: null, printerName: null, labelSize: null }
     if (raw && !raw.trim().startsWith('{') && !raw.trim().startsWith('[')) {
       zpl = raw.trim()
     } else {
-      const data = await validate<{ zpl: string; target?: PrintTarget }>(
+      const data = await validate<{
+        zpl: string
+        target?: PrintTarget
+        printerId?: string
+        printerName?: string
+      }>(
         req, res,
-        zplSchema as unknown as ZodSchema<{ zpl: string; target?: PrintTarget }>
+        zplSchema as unknown as ZodSchema<{
+          zpl: string
+          target?: PrintTarget
+          printerId?: string
+          printerName?: string
+        }>
       )
       if (!data) return
       zpl = data.zpl
-      target = data.target ?? 'server'
+      selection = selectionOf({ ...data, target: data.target ?? 'server' })
     }
 
     if (!zpl || zpl.length === 0) {
@@ -188,19 +288,23 @@ export function printZplHandler(apiKey: string, getQueue: () => PrintQueue | nul
 
     // Raw ZPL is passed through verbatim — the caller owns its geometry.
     const zplCopy = zpl
-    await dispatchPrint(res, printer, getQueue(), 'zpl', { zpl }, target, () => zplCopy)
+    await dispatchPrint(res, printer, getQueue(), getRegistry(), 'zpl', { zpl }, selection, () => zplCopy)
   }
 }
 
 /** POST /api/print/label — print a composed label from element definitions */
-export function printLabelHandler(apiKey: string, getQueue: () => PrintQueue | null): Handler {
+export function printLabelHandler(
+  apiKey: string,
+  getQueue: () => PrintQueue | null,
+  getRegistry: GetRegistry
+): Handler {
   return async (req, res, printer) => {
     if (!checkAuth(req, res, apiKey)) return
 
     const data = await validate<LabelRequest>(req, res, labelSchema)
     if (!data) return
 
-    await dispatchPrint(res, printer, getQueue(), 'label', data, data.target, size =>
+    await dispatchPrint(res, printer, getQueue(), getRegistry(), 'label', data, selectionOf(data), size =>
       buildElementZpl(data.elements, size, data.copies)
     )
   }
@@ -241,7 +345,11 @@ export function jobResultHandler(apiKey: string, getQueue: () => PrintQueue | nu
 }
 
 /** POST /api/print/serial — multi-copy print with auto-incrementing serial numbers */
-export function printSerialHandler(apiKey: string, getQueue: () => PrintQueue | null): Handler {
+export function printSerialHandler(
+  apiKey: string,
+  getQueue: () => PrintQueue | null,
+  getRegistry: GetRegistry
+): Handler {
   return async (req, res, printer) => {
     if (!checkAuth(req, res, apiKey)) return
 
@@ -263,10 +371,15 @@ export function printSerialHandler(apiKey: string, getQueue: () => PrintQueue | 
 
       const queue = getQueue()
       if (queue) {
-        const result = await queue.submit('text', { lines }, zplGen)
+        const result = await queue.submit('text', { lines }, zplGen, { printerId: data.printerId })
         results.push({ copy: i + 1, serial, jobId: result.jobId, queued: result.queued })
       } else {
-        const result = await printer.print(zplGen(currentLabelSize()))
+        if (!printer) {
+          json(res, { error: 'No printer connected' }, 503)
+          return
+        }
+        const labelSize = resolveJobLabelSize(getRegistry(), { printerId: data.printerId })
+        const result = await printer.print(zplGen(labelSize))
         results.push({ copy: i + 1, serial, jobId: result.jobId || 'direct', queued: false })
       }
     }
@@ -276,6 +389,7 @@ export function printSerialHandler(apiKey: string, getQueue: () => PrintQueue | 
       totalCopies: data.copies,
       serialStart: data.serialStart,
       serialEnd: data.serialStart + data.copies - 1,
+      printerId: data.printerId ?? getRegistry()?.defaultProfile()?.id ?? null,
       results
     })
   }

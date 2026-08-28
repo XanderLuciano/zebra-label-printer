@@ -9,11 +9,20 @@ import type { IncomingMessage, ServerResponse } from 'http'
 import type { Printer } from '../printer'
 import { json } from './helpers'
 
-/** A route handler: receives request, response, and the active printer */
+/**
+ * A route handler: receives request, response, and the default printer.
+ *
+ * The printer is nullable because a server with no printer configured is a valid
+ * setup — someone printing only to a browser-attached USB printer never needs one
+ * here. Handlers that require a printer check for it and answer 503.
+ *
+ * Handlers that need to address a *specific* printer take a registry accessor via
+ * their factory instead; this argument is only the default.
+ */
 export type Handler = (
   req: IncomingMessage,
   res: ServerResponse,
-  printer: Printer
+  printer: Printer | null
 ) => Promise<void>
 
 /** Complete route table: method → path → handler */
