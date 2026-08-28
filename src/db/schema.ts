@@ -45,7 +45,7 @@ export const printJobs = sqliteTable('print_jobs', {
   labelWidthDots: integer('label_width_dots'),
   labelHeightDots: integer('label_height_dots'),
   labelDpi: integer('label_dpi'),
-  createdAt: text('created_at').notNull().default("(datetime('now'))"),
+  createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
   startedAt: text('started_at'),
   completedAt: text('completed_at'),
   priority: integer('priority').notNull().default(0)
@@ -64,7 +64,7 @@ export const jobLogs = sqliteTable('job_logs', {
   jobId: text('job_id').notNull().references(() => printJobs.id, { onDelete: 'cascade' }),
   level: text('level', { enum: LOG_LEVELS }).notNull().default('info'),
   message: text('message').notNull(),
-  createdAt: text('created_at').notNull().default("(datetime('now'))")
+  createdAt: text('created_at').notNull().default(sql`(datetime('now'))`)
 }, table => [
   index('idx_job_logs_job').on(table.jobId)
 ])
@@ -74,7 +74,7 @@ export const jobLogs = sqliteTable('job_logs', {
 export const settings = sqliteTable('settings', {
   key: text('key').primaryKey(),
   value: text('value').notNull(),
-  updatedAt: text('updated_at').notNull().default("(datetime('now'))")
+  updatedAt: text('updated_at').notNull().default(sql`(datetime('now'))`)
 })
 
 // ─── Label Templates ─────────────────────────────────────────────────────────
@@ -84,8 +84,8 @@ export const labelTemplates = sqliteTable('label_templates', {
   name: text('name').notNull(),
   description: text('description'),
   data: text('data').notNull(),                      // JSON: full template definition
-  createdAt: text('created_at').notNull().default("(datetime('now'))"),
-  updatedAt: text('updated_at').notNull().default("(datetime('now'))")
+  createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
+  updatedAt: text('updated_at').notNull().default(sql`(datetime('now'))`)
 }, table => [
   index('idx_label_templates_name').on(table.name)
 ])
@@ -124,6 +124,10 @@ export const printers = sqliteTable('printers', {
   markOffset: integer('mark_offset'),
   /** Printer used when a request doesn't name one. At most one row is set. */
   isDefault: integer('is_default', { mode: 'boolean' }).notNull().default(false),
+  // sql`` rather than a plain string: `.default("(datetime('now'))")` makes
+  // drizzle-kit emit a quoted SQL *literal*, so the column ends up holding the
+  // text "(datetime('now'))" instead of a timestamp. The older tables in this
+  // schema still have that defect.
   createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
   updatedAt: text('updated_at').notNull().default(sql`(datetime('now'))`)
 }, table => [
@@ -141,7 +145,7 @@ export const printerEvents = sqliteTable('printer_events', {
   printerName: text('printer_name').notNull(),
   eventType: text('event_type', { enum: PRINTER_EVENT_TYPES }).notNull(),
   message: text('message'),
-  createdAt: text('created_at').notNull().default("(datetime('now'))")
+  createdAt: text('created_at').notNull().default(sql`(datetime('now'))`)
 })
 
 // ─── Migrations ──────────────────────────────────────────────────────────────

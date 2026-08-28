@@ -284,6 +284,36 @@ Both paths produce identical job records, so print history and reprints don't ca
 label came out of. A `printerId` that doesn't match a configured printer is a **404** rather than a
 silent fallback — the point of naming a printer is that the label lands on the right stock.
 
+### Timestamp defaults: use `sql`, never a plain string
+
+Declare current-time defaults as:
+
+```ts
+createdAt: text('created_at').notNull().default(sql`(datetime('now'))`)
+```
+
+**Not** `.default("(datetime('now'))")`. The plain string form is a trap that bit every
+timestamp column in this schema. It produces two separate faults:
+
+1. drizzle-kit emits `DEFAULT '(datetime(''now''))'` — a quoted SQL *literal*, so SQLite
+   stores the text `(datetime('now'))` rather than a date.
+2. Drizzle also inlines that string into the `INSERT` it generates, so a correct DDL alone
+   doesn't save you.
+
+The effect was silent: `datetime(created_at)` returned null, so print-history dates rendered
+as a non-date and ordering by `created_at` was ordering by a constant. Migration
+`0004_fix_timestamp_defaults` corrects the DDL and repairs existing rows —
+`print_jobs.created_at` exactly, since `print_jobs.id` embeds `Date.now()`; `job_logs` from
+their parent job; anything else to the epoch, which reads as "unknown" instead of inventing a
+plausible date. `test/db/timestamps.test.ts` guards both faults.
+
+That migration is **hand-written, not generated**. drizzle-kit's version rebuilds `job_logs`
+with its `ON DELETE CASCADE` foreign key intact and then drops `print_jobs`, which with
+`foreign_keys=ON` (set in `database.ts`) cascade-deletes every log row. Its
+`PRAGMA foreign_keys=OFF` header does not help — SQLite ignores that pragma inside a
+transaction, and the migrator runs in one. **Any future migration that rebuilds `print_jobs`
+must drop the `job_logs` foreign key first and restore it afterwards.**
+
 ## Adding a New Endpoint
 
 1. Add a Zod schema in `src/schemas.ts` (if accepting a request body)
@@ -385,5 +415,5 @@ When tagging a new release:
 
 | Version | Date | Changes |
 |---------|------|---------|
-| unreleased | — | Per-printer configuration: `printers` table, `PrinterRegistry`, printer CRUD API, `printerId` on print requests, per-printer queueing, multi-device WebUSB, unified printer list in Settings |
+| unreleased | — | Per-printer configuration: `printers` table, `PrinterRegistry`, printer CRUD API, `printerId` on print requests, per-printer queueing, multi-device WebUSB, unified printer list in Settings. Fixed timestamp defaults storing a string literal instead of a date (migration `0004`) |
 | v0.1.0 | 2026-04-27 | Initial release: ZPL builder, job queue, Nuxt 4 web UI, serial printing, label size management, Docker, one-command install |

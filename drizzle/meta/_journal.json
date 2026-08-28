@@ -29,6 +29,13 @@
       "when": 1787940588398,
       "tag": "0003_printers_per_printer_config",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1787947637250,
+      "tag": "0004_fix_timestamp_defaults",
+      "breakpoints": true
     }
   ]
 }

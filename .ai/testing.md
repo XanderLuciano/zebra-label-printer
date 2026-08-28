@@ -38,9 +38,27 @@ test/
     job-label-size.test.ts→ Per-job label geometry snapshot
     printer-repo.test.ts  → Per-printer config, the default printer, adopting discovery
     printer-routing.test.ts → Geometry resolution + the multi-printer queue
+    timestamps.test.ts    → Timestamp columns store dates, not string literals
   integration/            → (planned: full API endpoints, queue processing)
   properties/            → (planned: ZPL generation round-trip, serial number formatting)
 ```
+
+## Schema and Migration Tests
+
+Two classes of defect need separate coverage, because they fail independently:
+
+- **Migration correctness** — assert against the DDL that actually landed
+  (`SELECT sql FROM sqlite_master`). This catches a bad migration file.
+- **Runtime behaviour** — insert a row through the repo and assert what came back. This catches
+  a bad `schema.ts`, since Drizzle can inline a client-side default into the `INSERT` and
+  bypass the DDL entirely.
+
+`timestamps.test.ts` does both. A fix verified on only one side is not verified: reverting a
+single column's default made the behavioural test fail while the DDL test still passed.
+
+When a migration rebuilds a table (SQLite can't `ALTER COLUMN`), test it against a database
+staged at the *previous* migration and filled with data, then assert row counts, recovered
+values, `foreign_key_check`, and `integrity_check`. Re-running the migrator must be a no-op.
 
 ## Integration Test Isolation
 
