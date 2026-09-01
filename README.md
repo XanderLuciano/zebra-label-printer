@@ -462,8 +462,39 @@ const result = await queue.submit('text', { lines: ['Hello'] }, () => zpl);
 | `ZEBRA_PRINTER` | auto-detect | CUPS printer name |
 | `ZEBRA_API_KEY` | none | API key for Bearer auth |
 | `PORT` | 3420 | Server port |
-| `ZEBRA_DB_PATH` | `./data/zebra-label-printer.db` | SQLite database path |
+| `ZEBRA_DB_PATH` | `./data/zebra-label-printer.db` | SQLite database path (`install.sh` sets it to the data directory below) |
 | `NUXT_PUBLIC_API_BASE` | `http://localhost:3420` | API URL for web UI |
+
+### What persists, and where
+
+Print history, server printer configuration, settings, and your saved label
+templates all live in the SQLite database at `ZEBRA_DB_PATH`. The four built-in
+template presets are the exception — they ship in the code, are served read-only,
+and are never written to the database, so customising one means saving a copy
+(which then persists like any other template). Because presets always come from
+the code, they can't be deleted either: an example removed under the old
+seeded-rows model reappears as a preset after upgrading. Anything you had
+customised is kept as your own editable template.
+
+`install.sh` keeps the database **outside** the git clone (whose `dist-zebra/` is
+replaced wholesale on every build) at a platform default:
+
+| Platform | Data directory |
+|----------|----------------|
+| macOS | `$HOME/Library/Application Support/zebra-label-printer` |
+| Linux with systemd | `/var/lib/zebra-label-printer` |
+| Anything else | `${XDG_DATA_HOME:-$HOME/.local/share}/zebra-label-printer` |
+
+Override it with `install.sh --data-dir <path>` or the `ZEBRA_DATA_DIR` environment
+variable. A database found in either legacy location (`dist-zebra/data/` or
+`<clone>/data/`) is migrated to the new directory automatically on the next
+install, so existing installs keep their data. Under Docker, `/app/data` is a
+volume; mount a host directory there.
+
+Printers paired with a browser over WebUSB are the exception. That pairing is
+granted to one browser profile and can't be shared, so their configuration lives in
+that browser's `localStorage` and never reaches the server. Removing such a printer
+in Settings deletes its stored configuration from the browser.
 
 ## Project Structure
 

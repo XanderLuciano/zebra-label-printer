@@ -21,6 +21,9 @@ echo ""
 AUTO_START="ask"
 AUTO_UPDATE="ask"
 NON_INTERACTIVE=false
+# Empty means "pick the platform default". ZEBRA_DATA_DIR lets a deployment tool
+# (Ansible, etc.) pin the location without editing this script.
+DATA_DIR="${ZEBRA_DATA_DIR:-}"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
@@ -28,6 +31,13 @@ while [[ $# -gt 0 ]]; do
     --no-auto-start) AUTO_START="no"; shift ;;
     --auto-update)   AUTO_UPDATE="yes"; shift ;;
     --no-auto-update) AUTO_UPDATE="no"; shift ;;
+    --data-dir)
+      if [ -z "${2:-}" ]; then
+        echo "Error: --data-dir requires a non-empty path argument" >&2
+        exit 1
+      fi
+      DATA_DIR="$2"; shift 2 ;;
+    --data-dir=*)    DATA_DIR="${1#*=}"; shift ;;
     --yes|-y)        NON_INTERACTIVE=true; AUTO_START="yes"; AUTO_UPDATE="yes"; shift ;;
     --help|-h)
       echo "Usage: install.sh [options]"
@@ -35,7 +45,15 @@ while [[ $# -gt 0 ]]; do
       echo "  --no-auto-start   Disable auto-start on boot"
       echo "  --auto-update     Enable automatic update checks"
       echo "  --no-auto-update  Disable automatic update checks"
+      echo "  --data-dir <path> Where the database lives (default: outside the"
+      echo "                    source tree, see below). Also settable via"
+      echo "                    ZEBRA_DATA_DIR."
       echo "  -y, --yes         Non-interactive mode (yes to everything)"
+      echo ""
+      echo "Default data directory:"
+      echo "  Linux  /var/lib/zebra-label-printer"
+      echo "  macOS  \$HOME/Library/Application Support/zebra-label-printer"
+      echo "  other  \${XDG_DATA_HOME:-\$HOME/.local/share}/zebra-label-printer"
       exit 0
       ;;
     *) shift ;;
@@ -59,6 +77,16 @@ fi
 # ── Install package ──────────────────────────────────────────────────────────
 echo ""
 echo "━━━ Step 2/4: Package ━━━"
+
+# Stop any running service before building/migrating, so build.sh doesn't copy
+# a live WAL database mid-write and the old process doesn't keep writing to
+# unlinked files during the window before restart. Silent when no service exists.
+if command -v systemctl &>/dev/null; then
+  sudo systemctl stop zebra-label 2>/dev/null || true
+elif [[ "$OSTYPE" == "darwin"* ]]; then
+  launchctl unload "$HOME/Library/LaunchAgents/com.zebra.label-printer.plist" 2>/dev/null || true
+fi
+
 if [ -f "package.json" ] && [ -f "build.sh" ]; then
   info "Local source detected — building from source..."
   bash build.sh
@@ -80,6 +108,88 @@ fi
 NODE_BIN="$(which node)"
 SERVER_JS="$INSTALL_DIR/dist-zebra/dist/server/index.js"
 log "Package installed to $INSTALL_DIR"
+
+# ── Database location ────────────────────────────────────────────────────────
+#
+# The database holds print history, server printer configuration, and settings.
+# It lives *outside* the source tree entirely, for two reasons:
+#
+#   • build.sh replaces dist-zebra/ wholesale, so a database in there was deleted
+#     on every update — which is exactly what used to happen.
+#   • The checkout is disposable. A deploy tool may re-clone or hard-reset it, and
+#     service state has no business living inside a git working tree.
+#
+# Both historical locations are migrated automatically, so an existing install
+# keeps its data on the next run.
+if [ -z "$DATA_DIR" ]; then
+  if [[ "$OSTYPE" == "darwin"* ]]; then
+    DATA_DIR="$HOME/Library/Application Support/zebra-label-printer"
+  elif command -v systemctl &>/dev/null; then
+    # The system-wide state directory, matching what a systemd service expects.
+    DATA_DIR="/var/lib/zebra-label-printer"
+  else
+    DATA_DIR="${XDG_DATA_HOME:-$HOME/.local/share}/zebra-label-printer"
+  fi
+fi
+DB_PATH="$DATA_DIR/zebra-label-printer.db"
+
+# /var/lib needs root to create, but the service runs as $USER and must be able to
+# write there afterwards.
+if ! mkdir -p "$DATA_DIR" 2>/dev/null; then
+  sudo mkdir -p "$DATA_DIR"
+  sudo chown "$USER" "$DATA_DIR"
+fi
+if [ ! -w "$DATA_DIR" ]; then
+  sudo chown "$USER" "$DATA_DIR"
+fi
+
+# If the data directory has no database yet, migrate one from a legacy location.
+# When BOTH legacy databases exist, the one whose .db file has the newer mtime
+# wins ([ -nt ] works in bash on both Linux and macOS); the other is left in
+# place, ignored, and a warning names both.
+LEGACY_A="$INSTALL_DIR/dist-zebra/data"
+LEGACY_B="$INSTALL_DIR/data"
+MIGRATED_FROM=""
+if [ ! -f "$DB_PATH" ]; then
+  DB_A="$LEGACY_A/zebra-label-printer.db"
+  DB_B="$LEGACY_B/zebra-label-printer.db"
+  if [ -f "$DB_A" ] && [ -f "$DB_B" ]; then
+    if [ "$DB_A" -nt "$DB_B" ]; then
+      MIGRATED_FROM="$LEGACY_A"
+      warn "Two legacy databases found — migrating the newer one from $LEGACY_A, ignoring $LEGACY_B"
+    else
+      MIGRATED_FROM="$LEGACY_B"
+      warn "Two legacy databases found — migrating the newer one from $LEGACY_B, ignoring $LEGACY_A"
+    fi
+  elif [ -f "$DB_A" ]; then
+    MIGRATED_FROM="$LEGACY_A"
+  elif [ -f "$DB_B" ]; then
+    MIGRATED_FROM="$LEGACY_B"
+  fi
+  if [ -n "$MIGRATED_FROM" ]; then
+    # -a carries the -wal and -shm sidecars too; WAL mode needs them consistent.
+    cp -a "$MIGRATED_FROM/." "$DATA_DIR/"
+    log "Migrated the existing database out of $MIGRATED_FROM"
+  fi
+fi
+
+# Retire the migrated legacy database files so a later manual server start from
+# the old working directory can't silently resurrect a stale copy. Only rename
+# once the copy verifiably landed in $DATA_DIR.
+if [ -n "$MIGRATED_FROM" ] && [ -f "$DB_PATH" ]; then
+  for suffix in "" "-wal" "-shm"; do
+    f="$MIGRATED_FROM/zebra-label-printer.db$suffix"
+    if [ -f "$f" ]; then
+      mv "$f" "$f.migrated"
+    fi
+  done
+  info "Retired legacy database files in $MIGRATED_FROM (renamed to *.migrated)"
+fi
+info "Database: $DB_PATH"
+
+# Starting by hand needs both: the working directory so the server finds public/,
+# and the db path so it doesn't fall back to dist-zebra/data, which build.sh wipes.
+MANUAL_START="cd $INSTALL_DIR/dist-zebra && ZEBRA_DB_PATH='$DB_PATH' $NODE_BIN dist/server/index.js"
 
 # ── Configure ────────────────────────────────────────────────────────────────
 echo ""
@@ -117,7 +227,8 @@ Type=simple
 User=$USER
 WorkingDirectory=$INSTALL_DIR/dist-zebra
 Environment=PORT=3420
-Environment=ZEBRA_DB_PATH=$INSTALL_DIR/dist-zebra/data/zebra-label-printer.db
+# Quoted: the path is allowed to contain spaces.
+Environment="ZEBRA_DB_PATH=$DB_PATH"
 ExecStart=$NODE_BIN $SERVER_JS
 Restart=always
 RestartSec=10
@@ -153,7 +264,7 @@ SYSTEMD
     <key>PORT</key>
     <string>3420</string>
     <key>ZEBRA_DB_PATH</key>
-    <string>$INSTALL_DIR/dist-zebra/data/zebra-label-printer.db</string>
+    <string>$DB_PATH</string>
   </dict>
   <key>RunAtLoad</key>
   <true/>
@@ -168,17 +279,14 @@ LAUNCHD
 
   else
     warn "Could not detect init system. Auto-start not configured."
-    warn "Run manually: $NODE_BIN $SERVER_JS"
+    warn "Run manually: $MANUAL_START"
   fi
 else
-  info "Skipping auto-start (run manually: $NODE_BIN $SERVER_JS)"
+  info "Skipping auto-start (run manually: $MANUAL_START)"
 fi
 
 # ── Save preferences ────────────────────────────────────────────────────────
-if [ "$AUTO_UPDATE" = "yes" ]; then
-  # Will take effect after first server start
-  mkdir -p "$INSTALL_DIR/dist-zebra/data"
-fi
+# $DATA_DIR already exists; the setting itself is written on first server start.
 
 # ── Done ─────────────────────────────────────────────────────────────────────
 echo ""
@@ -227,7 +335,7 @@ if [ "$AUTO_START" = "yes" ]; then
   echo "  Auto-start:  ✅ Enabled (survives reboots)"
 else
   echo "  Auto-start:  ❌ Disabled"
-  echo "  Start manually: $NODE_BIN $SERVER_JS"
+  echo "  Start manually: $MANUAL_START"
 fi
 
 if [ "$AUTO_UPDATE" = "yes" ]; then
