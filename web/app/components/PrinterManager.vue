@@ -54,6 +54,23 @@ const printerItems = computed(() =>
     dot: displayFor(p.health).dot,
   })))
 
+/** Device serial number for the selected printer, or null if it doesn't report one. */
+const serialNumber = computed(() => printers.serialOf(selected.value))
+
+/**
+ * Why there's no serial to show.
+ *
+ * Worth distinguishing: a USB printer with no serial is a hardware limitation, while
+ * a server printer without one usually just means CUPS reached it over the network.
+ */
+const serialUnavailableHint = computed(() => {
+  const p = selected.value
+  if (!p) return 'Unknown'
+  return p.connection === 'local'
+    ? 'This device does not report a serial number'
+    : 'Not in the CUPS device URI — usually a networked printer'
+})
+
 /** Short description of where the selected printer lives. */
 const connectionSummary = computed(() => {
   const p = selected.value
@@ -197,10 +214,41 @@ async function saveName() {
 const customWidth = ref('')
 const customHeight = ref('')
 const sizeSaving = ref(false)
+/** Whether the custom width/height entry is showing. */
+const customSizeOpen = ref(false)
 
 const sizeKey = computed(() => {
   const size = selected.value?.labelSize
   return size ? `${size.widthDots}x${size.heightDots}` : ''
+})
+
+/** True when the loaded stock isn't one of the presets, so "Custom" is the active choice. */
+const isCustomSize = computed(() =>
+  !!selected.value
+  && !STANDARD_LABEL_SIZES.some(s => `${s.widthDots}x${s.heightDots}` === sizeKey.value))
+
+/**
+ * Show or hide the custom entry, seeding it with the current stock.
+ *
+ * Pre-filling means "custom" usually starts from the right ballpark rather than an
+ * empty pair of boxes — most custom sizes are a tweak of what's already loaded.
+ */
+function toggleCustomSize() {
+  customSizeOpen.value = !customSizeOpen.value
+  if (!customSizeOpen.value) return
+
+  const size = selected.value?.labelSize
+  if (size && !customWidth.value && !customHeight.value) {
+    customWidth.value = String(size.widthInches)
+    customHeight.value = String(size.heightInches)
+  }
+}
+
+// A draft custom size belongs to the printer it was typed for.
+watch(() => selected.value?.id ?? null, () => {
+  customSizeOpen.value = false
+  customWidth.value = ''
+  customHeight.value = ''
 })
 
 /**
@@ -256,6 +304,7 @@ async function setCustomSize() {
 
   customWidth.value = ''
   customHeight.value = ''
+  customSizeOpen.value = false
 }
 
 // ── Media configuration ────────────────────────────────────────────────────
@@ -600,9 +649,18 @@ async function remove() {
             :loading="sizeSaving && sizeKey === `${size.widthDots}x${size.heightDots}`"
             @click="setSize(size)"
           />
+          <!-- Custom sits with the presets because it's the same kind of choice. -->
+          <UButton
+            label="Custom"
+            icon="i-lucide-pencil-ruler"
+            :variant="isCustomSize || customSizeOpen ? 'solid' : 'outline'"
+            :color="isCustomSize || customSizeOpen ? 'primary' : 'neutral'"
+            size="sm"
+            @click="toggleCustomSize"
+          />
         </div>
 
-        <div class="flex items-end gap-3 pt-1 border-t">
+        <div v-if="customSizeOpen" class="flex items-end gap-3 pt-1 border-t">
           <UFormField label="Width (inches)">
             <UInput v-model="customWidth" type="number" placeholder="3" size="sm" class="w-24" min="0.25" max="12" step="0.25" />
           </UFormField>
@@ -720,6 +778,12 @@ async function remove() {
           <dd class="col-span-2">
             {{ selected.connection === 'local' ? 'This browser, over WebUSB' : 'Server' }}
             <span class="text-gray-500">({{ selected.transport }})</span>
+          </dd>
+
+          <dt class="text-gray-500">Serial number</dt>
+          <dd class="col-span-2">
+            <span v-if="serialNumber" class="font-mono text-xs break-all">{{ serialNumber }}</span>
+            <span v-else class="text-xs text-gray-500">{{ serialUnavailableHint }}</span>
           </dd>
 
           <template v-if="selected.cupsName">

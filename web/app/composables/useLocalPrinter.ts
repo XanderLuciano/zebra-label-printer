@@ -143,6 +143,21 @@ export function deviceIdOf(device: USBDevice): string {
   return `usb-${hex(device.vendorId)}-${hex(device.productId)}-${device.serialNumber || NO_SERIAL}`
 }
 
+/**
+ * Recover the USB serial number from a device id.
+ *
+ * Ids are `usb-{vendor}-{product}-{serial}`, so the serial is still readable for a
+ * device that isn't connected and therefore can't be asked directly. Returns null
+ * for hardware that never reported one.
+ */
+export function serialFromDeviceId(deviceId: string): string | null {
+  const parts = deviceId.split('-')
+  if (parts.length < 4 || parts[0] !== 'usb') return null
+  // A serial may itself contain hyphens, so take everything past the product id.
+  const serial = parts.slice(3).join('-')
+  return serial && serial !== NO_SERIAL ? serial : null
+}
+
 /** A human-readable name for a device, falling back to its USB ids. */
 export function deviceNameOf(device: USBDevice): string {
   return device.productName
@@ -176,6 +191,17 @@ export function useLocalPrinter() {
   function nameOf(deviceId: string): string | null {
     const device = connections.value.get(deviceId)?.device
     return device ? deviceNameOf(device) : null
+  }
+
+  /**
+   * USB serial number for a paired device.
+   *
+   * Asks the live device when it's connected, since that's authoritative, and falls
+   * back to the copy baked into the id at pairing time otherwise.
+   */
+  function serialOf(deviceId: string): string | null {
+    const device = connections.value.get(deviceId)?.device
+    return device?.serialNumber || serialFromDeviceId(deviceId)
   }
 
   /**
@@ -496,6 +522,7 @@ export function useLocalPrinter() {
     lastError: computed(() => lastError.value),
     isConnected,
     nameOf,
+    serialOf,
     listenForUsbEvents,
     connect,
     reconnectSaved,

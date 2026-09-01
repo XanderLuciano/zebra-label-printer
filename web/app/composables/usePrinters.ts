@@ -92,6 +92,24 @@ export function isLocalPrinterId(id: string | null | undefined): boolean {
   return typeof id === 'string' && id.startsWith(LOCAL_PRINTER_ID_PREFIX)
 }
 
+/**
+ * The USB serial number CUPS recorded for a server printer.
+ *
+ * CUPS spells it into the device URI as a query parameter, e.g.
+ * `usb://Zebra%20Technologies/ZTC%20GK420d?serial=38J154200130`. Networked printers
+ * have no serial in their URI, so this returns null for them.
+ */
+export function serialFromDeviceUri(uri: string | null | undefined): string | null {
+  const match = uri?.match(/[?&]serial=([^&\s]+)/)
+  if (!match?.[1]) return null
+  try {
+    return decodeURIComponent(match[1])
+  } catch {
+    // Malformed escape sequence; the raw value still beats showing nothing.
+    return match[1]
+  }
+}
+
 /** Derive inches from dots so the two can never disagree. */
 export function labelSizeFromDots(
   widthDots: number,
@@ -452,6 +470,21 @@ export function usePrinters() {
     return printers.value.find(p => p.id === id) ?? null
   }
 
+  /**
+   * The device serial number for a printer, whichever kind it is.
+   *
+   * The two kinds record it in different places — a browser-paired device is asked
+   * directly, while a server printer's serial only exists in the URI CUPS assigned
+   * it — so callers get one accessor rather than that branch.
+   */
+  function serialOf(printer: PrinterEntry | null): string | null {
+    if (!printer) return null
+    if (printer.connection === 'local') {
+      return printer.deviceId ? localPrinter.serialOf(printer.deviceId) : null
+    }
+    return serialFromDeviceUri(printer.deviceUri)
+  }
+
   return {
     printers,
     selected,
@@ -467,6 +500,7 @@ export function usePrinters() {
     watchWhileMounted,
     select,
     get,
+    serialOf,
     configure,
     addLocalPrinter,
     adoptLocalDevice,
