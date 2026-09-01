@@ -13,16 +13,22 @@ export type JobStatus = 'pending' | 'printing' | 'completed' | 'failed' | 'cance
 export type JobType = 'text' | 'barcode' | 'qr' | 'zpl' | 'label';
 
 /**
- * A template as the API returns it: the stored definition plus server metadata.
+ * A template as the API returns it: the definition plus server metadata.
  *
  * Mirrors StoredTemplate in src/db/template-repo.ts. Previously these endpoints
  * were typed as `{ id, name, [k: string]: unknown }`, which meant callers had to
  * cast to LabelTemplate and lost any guarantee the layout fields were present.
+ *
+ * Covers both kinds the API serves: the user's own templates, and the read-only
+ * presets built from server code. Presets carry no timestamps because they were
+ * never written anywhere.
  */
 export interface StoredTemplate extends LabelTemplate {
   id: string;
-  createdAt: string;
-  updatedAt: string;
+  createdAt?: string;
+  updatedAt?: string;
+  /** A preset ships in the server's code: it can't be edited or deleted, only copied. */
+  readOnly: boolean;
 }
 
 /** Where a label is printed: via the server's CUPS queue, or the browser's USB printer */

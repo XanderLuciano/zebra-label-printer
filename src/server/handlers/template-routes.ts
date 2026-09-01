@@ -15,28 +15,53 @@ import { json, validate, checkAuth } from '../helpers'
 import { ZPLBuilder } from '../../zpl'
 import { getLabelSize } from '../../db/settings-repo'
 import {
-  listTemplates,
+  listAllTemplates,
+  findTemplate,
   getTemplate,
   createTemplate,
   updateTemplate,
   deleteTemplate
 } from '../../db/template-repo'
+import { isPresetId } from '../../db/template-presets'
 import { templateSchema, renderZplSchema } from '../../schemas'
 import type { TemplateDefinition, RenderZplRequest } from '../../schemas'
 
-/** GET /api/templates — list all templates */
+/**
+ * The response for an attempt to modify a preset.
+ *
+ * A preset ships in this release's code, so there is nothing to write to. Saving a
+ * copy is the supported way to customise one, and the message says so rather than
+ * leaving a caller to guess why a valid-looking request was refused.
+ */
+const PRESET_IMMUTABLE = {
+  error: 'This template is a built-in preset and cannot be changed or removed. '
+    + 'Save a copy to customise it — the copy is yours to edit.'
+}
+
+/**
+ * Should a write to this id be refused as a preset?
+ *
+ * A row under a preset id can only mean the startup migration failed and left the
+ * user's customisation behind. That row is theirs, so writes to it stay allowed —
+ * refusing would lock their own work behind a 403.
+ */
+function isProtectedPreset(id: string): boolean {
+  return isPresetId(id) && !getTemplate(id)
+}
+
+/** GET /api/templates — list the user's templates plus the built-in presets */
 export function templatesListHandler(apiKey: string): Handler {
   return async (req, res, _printer) => {
     if (!checkAuth(req, res, apiKey)) return
-    json(res, { templates: listTemplates() })
+    json(res, { templates: listAllTemplates() })
   }
 }
 
-/** GET /api/templates/:id — fetch a single template */
+/** GET /api/templates/:id — fetch a single template, preset or user-owned */
 export function templateGetHandler(apiKey: string, id: string): Handler {
   return async (req, res, _printer) => {
     if (!checkAuth(req, res, apiKey)) return
-    const tpl = getTemplate(id)
+    const tpl = findTemplate(id)
     if (!tpl) {
       json(res, { error: 'Template not found' }, 404)
       return
@@ -56,10 +81,16 @@ export function templateCreateHandler(apiKey: string): Handler {
   }
 }
 
-/** PUT /api/templates/:id — update a template */
+/** PUT /api/templates/:id — update a user's template. Presets are immutable. */
 export function templateUpdateHandler(apiKey: string, id: string): Handler {
   return async (req, res, _printer) => {
     if (!checkAuth(req, res, apiKey)) return
+    // Checked before validating the body: the answer is the same either way, and
+    // a schema complaint would be a confusing thing to get back.
+    if (isProtectedPreset(id)) {
+      json(res, PRESET_IMMUTABLE, 403)
+      return
+    }
     const data = await validate<TemplateDefinition>(req, res, templateSchema)
     if (!data) return
     const tpl = updateTemplate(id, data)
@@ -71,10 +102,14 @@ export function templateUpdateHandler(apiKey: string, id: string): Handler {
   }
 }
 
-/** DELETE /api/templates/:id — delete a template */
+/** DELETE /api/templates/:id — delete a user's template. Presets are immutable. */
 export function templateDeleteHandler(apiKey: string, id: string): Handler {
   return async (req, res, _printer) => {
     if (!checkAuth(req, res, apiKey)) return
+    if (isProtectedPreset(id)) {
+      json(res, PRESET_IMMUTABLE, 403)
+      return
+    }
     const removed = deleteTemplate(id)
     if (!removed) {
       json(res, { error: 'Template not found' }, 404)

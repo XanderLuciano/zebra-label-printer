@@ -70,7 +70,7 @@ import {
 import { closeDb, getDb } from '../db/database'
 import { PrinterRegistry, isUnresolved } from '../printer-registry'
 import { PrinterHealthMonitor } from '../printer-health'
-import { seedBuiltinTemplates } from '../db/template-seed'
+import { migrateSeededPresetRows } from '../db/template-repo'
 import { printJobs } from '../db/schema'
 import { eq } from 'drizzle-orm'
 import { checkForUpdates } from '../updater'
@@ -384,16 +384,20 @@ export class WebhookServer {
     // printer_events is a real connectivity history.
     this.health.start()
 
-    // Offer the built-in example templates once, so a fresh install has
-    // something to print from. Deleting or editing one is respected.
+    // Presets are served from code, so nothing needs seeding. Older versions did
+    // seed them as ordinary rows, and those would now duplicate the preset they
+    // came from — so they get retired here, keeping anything the user customised.
     try {
-      const { seeded } = seedBuiltinTemplates()
-      if (seeded.length > 0) {
-        console.log(`   Seeded ${seeded.length} example template${seeded.length > 1 ? 's' : ''}`)
+      const { removed, preserved } = migrateSeededPresetRows()
+      if (removed.length > 0) {
+        console.log(`   Retired ${removed.length} seeded template row${removed.length > 1 ? 's' : ''} now served as presets`)
+      }
+      if (preserved.length > 0) {
+        console.log(`   Kept ${preserved.length} customised example${preserved.length > 1 ? 's' : ''} as your own template${preserved.length > 1 ? 's' : ''}`)
       }
     } catch (err) {
-      // Examples are a convenience; never block startup over them.
-      console.error(`Could not seed example templates: ${(err as Error).message}`)
+      // A tidy-up, not a prerequisite; never block startup over it.
+      console.error(`Could not migrate seeded template rows: ${(err as Error).message}`)
     }
 
     // Start periodic update check (once per day)

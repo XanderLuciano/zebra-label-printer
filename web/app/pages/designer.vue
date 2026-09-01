@@ -37,7 +37,7 @@ const values = reactive<Record<string, string>>({})
 const targetW = ref(template.value.baseWidthDots)
 const targetH = ref(template.value.baseHeightDots)
 
-const savedTemplates = ref<Array<{ id: string; name: string }>>([])
+const savedTemplates = ref<Array<{ id: string; name: string; readOnly: boolean }>>([])
 // undefined rather than null: USelect's modelValue is `string | undefined`, and
 // both render as "nothing selected".
 const loadId = ref<string | undefined>(undefined)
@@ -77,16 +77,16 @@ const selectedEl = computed<TemplateElement | null>(() => {
 })
 
 /**
- * Id prefix the server gives its seeded example templates.
+ * Whether the loaded template is a read-only preset.
  *
- * Only used to warn that deleting one is permanent — seeding records which ids it
- * has already inserted, so a deleted example is never re-created. If the prefix
- * ever changes server-side the warning just stops appearing, nothing breaks.
- * See `BUILTIN_TEMPLATES` in src/db/template-seed.ts.
+ * Taken from the API rather than guessed from the id prefix, which is what this
+ * used to do — the server owns the distinction, so asking it is the only way this
+ * can't quietly drift out of step.
+ *
+ * A preset can be opened and edited freely on screen; it just can't be saved back.
+ * Save forks it into a copy instead.
  */
-const BUILTIN_ID_PREFIX = 'tpl_builtin_'
-
-const isBuiltinTemplate = computed(() => !!template.value.id?.startsWith(BUILTIN_ID_PREFIX))
+const loadedIsPreset = ref(false)
 
 const resolved = computed(() =>
   resolveTemplate(template.value, values, { widthDots: targetW.value, heightDots: targetH.value })
@@ -300,11 +300,33 @@ function buildDef(): Record<string, unknown> {
 async function refreshTemplateList() {
   try {
     const res = await api.listTemplates()
-    savedTemplates.value = res.templates.map(t => ({ id: t.id, name: t.name }))
+    savedTemplates.value = res.templates.map(t => ({
+      id: t.id,
+      name: t.name,
+      readOnly: t.readOnly,
+    }))
   } catch { /* ignore */ }
 }
 
+/** Load-dropdown entries, with presets called out so their behaviour isn't a surprise. */
+const templateItems = computed(() =>
+  savedTemplates.value.map(t => ({
+    label: t.readOnly ? `${t.name} (preset)` : t.name,
+    value: t.id,
+  })))
+
+/**
+ * Save the working copy.
+ *
+ * A preset has nowhere to be saved back to, so Save forks it into a copy instead
+ * of failing — which is the only thing the user could have meant. Everything else
+ * behaves as before: update if it's already saved, create if it isn't.
+ */
 async function save() {
+  if (loadedIsPreset.value) {
+    openSaveAs()
+    return
+  }
   saving.value = true
   try {
     const def = buildDef()
@@ -359,6 +381,8 @@ async function saveAsCopy() {
     template.value.id = res.template.id
     template.value.name = name
     template.value.description = description
+    // The copy is the user's own, even when it was forked from a preset.
+    loadedIsPreset.value = false
     loadId.value = res.template.id
     saveAsOpen.value = false
     toast.add({ title: 'Saved as a new template', description: name, color: 'success' })
@@ -389,6 +413,7 @@ async function loadTemplate(id: string) {
     targetW.value = t.baseWidthDots
     targetH.value = t.baseHeightDots
     selectedId.value = null
+    loadedIsPreset.value = t.readOnly
     loadId.value = id
   } catch (e) {
     toast.add({ title: 'Load failed', description: (e as Error).message, color: 'error' })
@@ -402,14 +427,15 @@ function newTemplate() {
   targetW.value = template.value.baseWidthDots
   targetH.value = template.value.baseHeightDots
   selectedId.value = null
+  loadedIsPreset.value = false
   loadId.value = undefined
 }
 
 /**
  * Delete the loaded template, for real this time.
  *
- * Behind a confirmation because there is no undo: the definition is gone, and a
- * built-in example won't be re-seeded either.
+ * Behind a confirmation because there is no undo. Only ever reachable for the
+ * user's own templates — a preset has no Delete button, and the server refuses it.
  */
 async function confirmDelete() {
   if (!template.value.id) return
@@ -521,7 +547,7 @@ onMounted(() => {
 
       <USelect
         v-model="loadId"
-        :items="savedTemplates.map(t => ({ label: t.name, value: t.id }))"
+        :items="templateItems"
         placeholder="Load template…"
         icon="i-lucide-folder-open"
         class="w-52"
@@ -530,11 +556,18 @@ onMounted(() => {
       <div class="flex-1" />
 
       <UButton icon="i-lucide-file-plus" variant="soft" color="neutral" label="New" @click="newTemplate" />
-      <UButton icon="i-lucide-save" color="primary" label="Save" :loading="saving" @click="save" />
-      <!-- Only meaningful once there's a saved template to fork from; before
-           that, plain Save already creates a new one. -->
+      <!-- On a preset this forks a copy, since there's nothing to save back to. -->
       <UButton
-        v-if="template.id"
+        :icon="loadedIsPreset ? 'i-lucide-copy' : 'i-lucide-save'"
+        color="primary"
+        :label="loadedIsPreset ? 'Save as copy' : 'Save'"
+        :loading="saving"
+        @click="save"
+      />
+      <!-- Only meaningful once there's a saved template to fork from; before that,
+           plain Save already creates a new one, and on a preset it already copies. -->
+      <UButton
+        v-if="template.id && !loadedIsPreset"
         icon="i-lucide-copy"
         variant="soft"
         color="neutral"
@@ -542,7 +575,7 @@ onMounted(() => {
         @click="openSaveAs"
       />
       <UButton
-        v-if="template.id"
+        v-if="template.id && !loadedIsPreset"
         icon="i-lucide-trash-2"
         color="error"
         variant="soft"
@@ -551,6 +584,20 @@ onMounted(() => {
       />
       <UButton icon="i-lucide-printer" color="success" label="Print test" :loading="printing" @click="printTest" />
     </div>
+
+    <!--
+      Presets are editable on screen but not saveable back, so say so up front
+      rather than letting someone lay out a label and find out at the Save step.
+    -->
+    <UAlert
+      v-if="loadedIsPreset"
+      class="mb-5"
+      color="neutral"
+      variant="soft"
+      icon="i-lucide-lock"
+      title="This is a built-in preset"
+      description="Change anything you like — saving creates your own copy and leaves the preset alone. Presets come from the server's code, so they update with new releases."
+    />
 
     <div class="grid grid-cols-1 xl:grid-cols-[280px_1fr_300px] gap-5">
       <!-- ── Left column: elements, variables, mock data ─────────────────── -->
@@ -966,14 +1013,6 @@ onMounted(() => {
             <span class="font-medium">{{ template.name }}</span>
             will be removed. This can't be undone.
           </p>
-          <UAlert
-            v-if="isBuiltinTemplate"
-            color="warning"
-            variant="soft"
-            icon="i-lucide-triangle-alert"
-            title="This is a built-in example"
-            description="Examples are seeded once, so it won't reappear on restart. Save a copy first if you might want it back."
-          />
           <p class="text-xs text-gray-500">
             Past print jobs keep their own copy of what was printed, so history is unaffected.
           </p>

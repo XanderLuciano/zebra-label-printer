@@ -1,5 +1,10 @@
 /**
- * Built-in example templates.
+ * Read-only label template presets.
+ *
+ * Defined in code and served directly, never written to the database, so they
+ * always reflect this release and cannot be damaged by an edit, a delete, or a
+ * lost database. Customising one means saving a copy, which becomes an ordinary
+ * user-owned template.
  *
  * These give the designer and the "Print from Template" page something real to
  * start from, using this shop's actual conventions rather than placeholder text:
@@ -17,8 +22,6 @@
  */
 
 import type { TemplateDefinition } from '../schemas'
-import { getJsonSetting, setSetting } from './settings-repo'
-import { getTemplate, createTemplateWithId } from './template-repo'
 
 // ─── Geometry helpers ────────────────────────────────────────────────────────
 
@@ -397,41 +400,58 @@ function assetTag3x5Landscape(): TemplateDefinition {
   }
 }
 
-// ─── Seeding ─────────────────────────────────────────────────────────────────
-
-/** Stable ids so a built-in is recognisable and only ever seeded once. */
-export const BUILTIN_TEMPLATES: ReadonlyArray<{ id: string; build: () => TemplateDefinition }> = [
-  { id: 'tpl_builtin_part_2x1', build: partLabel2x1 },
-  { id: 'tpl_builtin_bag_2x1', build: bagLabel2x1 },
-  { id: 'tpl_builtin_part_3x5_landscape', build: partLabel3x5Landscape },
-  { id: 'tpl_builtin_asset_3x5_landscape', build: assetTag3x5Landscape }
-]
-
-/** Setting tracking which built-ins have already been offered. */
-const SEEDED_KEY = 'builtin_templates_seeded'
+// ─── The preset catalogue ────────────────────────────────────────────────────
 
 /**
- * Insert any built-in example template that has never been seeded before.
- *
- * Tracks seeded ids rather than just checking whether the row exists, so that
- * deleting an example keeps it deleted instead of having it reappear on the next
- * restart — while still letting a later release add new examples. Editing one is
- * safe for the same reason: it is never rewritten once seeded.
- *
- * Safe to call on every startup.
+ * Ids carry this prefix so a preset is recognisable at a glance, and so the ids
+ * that were previously seeded into the database line up with the presets that
+ * replaced them. Changing it would orphan those rows.
  */
-export function seedBuiltinTemplates(): { seeded: string[] } {
-  const already = new Set(getJsonSetting<string[]>(SEEDED_KEY, []))
-  const seeded: string[] = []
+export const PRESET_ID_PREFIX = 'tpl_builtin_'
 
-  for (const { id, build } of BUILTIN_TEMPLATES) {
-    if (already.has(id)) continue
-    // Guard against a half-written previous run leaving the row without the marker.
-    if (!getTemplate(id)) createTemplateWithId(id, build())
-    already.add(id)
-    seeded.push(id)
-  }
+/**
+ * The presets this release ships.
+ *
+ * These used to be inserted into the database once and then treated as ordinary
+ * editable rows. That made them destructible — an edit or a delete was permanent,
+ * and losing the database silently reverted every customisation — while also
+ * making it impossible to improve a preset in a later release, because seeding
+ * deliberately never rewrote a row it had already written.
+ *
+ * They are now served straight from here and never stored. Editing one means
+ * saving a copy, which is the user's own template from then on. Changing a preset
+ * below updates it for everyone on the next deploy.
+ */
+export const TEMPLATE_PRESETS: ReadonlyArray<{ id: string; build: () => TemplateDefinition }> = [
+  { id: `${PRESET_ID_PREFIX}part_2x1`, build: partLabel2x1 },
+  { id: `${PRESET_ID_PREFIX}bag_2x1`, build: bagLabel2x1 },
+  { id: `${PRESET_ID_PREFIX}part_3x5_landscape`, build: partLabel3x5Landscape },
+  { id: `${PRESET_ID_PREFIX}asset_3x5_landscape`, build: assetTag3x5Landscape }
+]
 
-  if (seeded.length > 0) setSetting(SEEDED_KEY, [...already])
-  return { seeded }
+/**
+ * A preset in the shape the API returns templates in.
+ *
+ * Structurally compatible with `StoredTemplate`, minus the timestamps — a preset
+ * has no creation or modification time because it was never written anywhere.
+ */
+export interface PresetTemplate extends TemplateDefinition {
+  id: string;
+  readOnly: true;
+}
+
+/** Is this id one of the presets? Cheap enough to call on every request. */
+export function isPresetId(id: string): boolean {
+  return TEMPLATE_PRESETS.some(p => p.id === id)
+}
+
+/** Build one preset, or null if that id isn't a preset. */
+export function presetTemplate(id: string): PresetTemplate | null {
+  const preset = TEMPLATE_PRESETS.find(p => p.id === id)
+  return preset ? { ...preset.build(), id: preset.id, readOnly: true } : null
+}
+
+/** Build every preset, in catalogue order. */
+export function listPresetTemplates(): PresetTemplate[] {
+  return TEMPLATE_PRESETS.map(p => ({ ...p.build(), id: p.id, readOnly: true }))
 }

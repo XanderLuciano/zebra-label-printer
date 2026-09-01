@@ -1,5 +1,5 @@
 /**
- * Tests for the built-in example templates.
+ * Tests for the built-in template presets.
  *
  * These are the first thing a new install sees, so a broken one is worse than
  * none. Each is checked against the same schema the API enforces, then resolved
@@ -10,7 +10,7 @@
  * Labelary; the numbers in this file are the offline consequences of that.
  */
 import { describe, it, expect } from 'vitest'
-import { BUILTIN_TEMPLATES } from '../../src/db/template-seed'
+import { TEMPLATE_PRESETS } from '../../src/db/template-presets'
 import { templateSchema } from '../../src/schemas'
 import { ZPLBuilder } from '../../src/zpl'
 import {
@@ -20,8 +20,8 @@ import {
   type LabelTemplate
 } from '../../web/app/composables/useTemplateEngine'
 
-/** Resolve a built-in with every variable set to its sample value. */
-function resolveWithSamples(build: () => ReturnType<typeof BUILTIN_TEMPLATES[number]['build']>) {
+/** Resolve a preset with every variable set to its sample value. */
+function resolveWithSamples(build: () => ReturnType<typeof TEMPLATE_PRESETS[number]['build']>) {
   const def = build()
   const values: Record<string, string> = {}
   for (const v of def.variables) values[v.name] = v.sample ?? ''
@@ -33,9 +33,9 @@ function resolveWithSamples(build: () => ReturnType<typeof BUILTIN_TEMPLATES[num
   return { def, resolved }
 }
 
-describe('built-in templates', () => {
+describe('template presets', () => {
   it('ships the expected set, one pair per label size', () => {
-    expect(BUILTIN_TEMPLATES.map(t => t.id)).toEqual([
+    expect(TEMPLATE_PRESETS.map(t => t.id)).toEqual([
       'tpl_builtin_part_2x1',
       'tpl_builtin_bag_2x1',
       'tpl_builtin_part_3x5_landscape',
@@ -43,14 +43,15 @@ describe('built-in templates', () => {
     ])
   })
 
-  it('uses stable ids marked as built-in', () => {
-    // Seeding is idempotent on these ids, so they must not drift.
-    for (const { id } of BUILTIN_TEMPLATES) {
+  it('uses stable ids marked as presets', () => {
+    // Ids are referenced by saved selections and by the migration off the old
+    // seeded rows, so they must not drift.
+    for (const { id } of TEMPLATE_PRESETS) {
       expect(id).toMatch(/^tpl_builtin_[a-z0-9_]+$/)
     }
   })
 
-  for (const { id, build } of BUILTIN_TEMPLATES) {
+  for (const { id, build } of TEMPLATE_PRESETS) {
     describe(id, () => {
       it('satisfies the API template schema', () => {
         const result = templateSchema.safeParse(build())
@@ -121,7 +122,7 @@ describe('built-in templates', () => {
 })
 
 describe('landscape 3x5 templates', () => {
-  const landscape = BUILTIN_TEMPLATES.filter(t => t.id.endsWith('_landscape'))
+  const landscape = TEMPLATE_PRESETS.filter(t => t.id.endsWith('_landscape'))
 
   it('rotates the text so the label reads sideways', () => {
     for (const { id, build } of landscape) {
@@ -151,7 +152,7 @@ describe('landscape 3x5 templates', () => {
     // The mapping is label x = W - viewerTop - cellHeight, so a line further down
     // the page has a *smaller* xPct. Getting that sign wrong still looks plausible
     // on screen, so it is pinned here.
-    const def = BUILTIN_TEMPLATES.find(t => t.id === 'tpl_builtin_part_3x5_landscape')!.build()
+    const def = TEMPLATE_PRESETS.find(t => t.id === 'tpl_builtin_part_3x5_landscape')!.build()
     const byId = new Map(def.elements.map(e => [(e as { id: string }).id, e as { xPct: number }]))
     const topToBottom = ['name', 'number', 'rev', 'serial', 'ticket', 'notes', 'barcode']
     for (let i = 1; i < topToBottom.length; i++) {

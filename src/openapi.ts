@@ -10,7 +10,7 @@ export const OPENAPI_SPEC = {
   openapi: '3.1.0',
   info: {
     title: 'Zebra Label Printer API',
-    version: '0.4.0',
+    version: '0.5.0',
     description:
       'Network webhook API for the Zebra GK420d label printer. ' +
       'Print text labels, barcodes (1D + 2D/QR), raw ZPL, or compose ' +
@@ -550,9 +550,14 @@ export const OPENAPI_SPEC = {
         summary: 'List label templates',
         operationId: 'listTemplates',
         tags: ['Templates'],
+        description:
+          'Returns the user\'s own templates first, followed by the built-in ' +
+          'presets. Presets are served from code rather than the database: they ' +
+          'carry `readOnly: true`, have no timestamps, and cannot be edited or ' +
+          'deleted — save a copy to customise one.',
         responses: {
           '200': {
-            description: 'All saved templates',
+            description: 'User templates and built-in presets',
             content: {
               'application/json': {
                 schema: {
@@ -595,6 +600,7 @@ export const OPENAPI_SPEC = {
         summary: 'Get a label template',
         operationId: 'getTemplate',
         tags: ['Templates'],
+        description: 'Resolves user templates and built-in presets alike.',
         responses: {
           '200': { $ref: '#/components/responses/TemplateResponse' },
           '404': { $ref: '#/components/responses/NotFound' }
@@ -604,6 +610,9 @@ export const OPENAPI_SPEC = {
         summary: 'Update a label template',
         operationId: 'updateTemplate',
         tags: ['Templates'],
+        description:
+          'Only the user\'s own templates can be updated. Built-in presets are ' +
+          'read-only; save a copy instead.',
         requestBody: {
           required: true,
           content: {
@@ -615,6 +624,7 @@ export const OPENAPI_SPEC = {
         responses: {
           '200': { $ref: '#/components/responses/TemplateResponse' },
           '400': { $ref: '#/components/responses/ValidationError' },
+          '403': { $ref: '#/components/responses/PresetImmutable' },
           '404': { $ref: '#/components/responses/NotFound' }
         }
       },
@@ -622,6 +632,9 @@ export const OPENAPI_SPEC = {
         summary: 'Delete a label template',
         operationId: 'deleteTemplate',
         tags: ['Templates'],
+        description:
+          'Only the user\'s own templates can be deleted. Built-in presets are ' +
+          'read-only and cannot be removed.',
         responses: {
           '200': {
             description: 'Template deleted',
@@ -634,6 +647,7 @@ export const OPENAPI_SPEC = {
               }
             }
           },
+          '403': { $ref: '#/components/responses/PresetImmutable' },
           '404': { $ref: '#/components/responses/NotFound' }
         }
       }
@@ -1603,11 +1617,17 @@ export const OPENAPI_SPEC = {
           { $ref: '#/components/schemas/TemplateDefinition' },
           {
             type: 'object',
-            required: ['id'],
+            required: ['id', 'readOnly'],
             properties: {
               id: { type: 'string', example: 'tpl_1d1d3c01b1942eaf' },
-              createdAt: { type: 'string' },
-              updatedAt: { type: 'string' }
+              readOnly: {
+                type: 'boolean',
+                description:
+                  'True for built-in presets, which are served from code and cannot be edited or deleted. ' +
+                  'False for the user\'s own templates.'
+              },
+              createdAt: { type: 'string', description: 'Absent on built-in presets, which are never stored.' },
+              updatedAt: { type: 'string', description: 'Absent on built-in presets, which are never stored.' }
             }
           }
         ]
@@ -1973,6 +1993,24 @@ export const OPENAPI_SPEC = {
               type: 'object',
               properties: {
                 error: { type: 'string', example: 'Template not found' }
+              }
+            }
+          }
+        }
+      },
+      PresetImmutable: {
+        description: 'The id names a built-in preset, which is read-only',
+        content: {
+          'application/json': {
+            schema: {
+              type: 'object',
+              properties: {
+                error: {
+                  type: 'string',
+                  example:
+                    'This template is a built-in preset and cannot be changed or removed. ' +
+                    'Save a copy to customise it — the copy is yours to edit.'
+                }
               }
             }
           }
