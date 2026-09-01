@@ -208,6 +208,23 @@ export const DEFAULT_EVENT_LIMIT = 50
 /** Number of recent label sizes to remember */
 export const MAX_RECENT_SIZES = 10
 
+/**
+ * Most copies a single print request may ask for.
+ *
+ * Copies are emitted as one `^PQ` command, so the printer repeats the label from
+ * its own buffer rather than us re-sending it. 500 matches the serial-label
+ * endpoint and is well inside `^PQ`'s documented range.
+ */
+export const MAX_COPIES = 500
+
+/**
+ * Above this, the UI asks the operator to confirm before printing.
+ *
+ * A guard against a mistyped quantity, not a limit — a fat-fingered "300" costs a
+ * roll of labels. Anything at or below this prints straight away.
+ */
+export const COPIES_CONFIRM_THRESHOLD = 30
+
 // ═══════════════════════════════════════════════════════════════════════════════
 // DEVICE PRESENCE (hot-plug detection)
 // ═══════════════════════════════════════════════════════════════════════════════

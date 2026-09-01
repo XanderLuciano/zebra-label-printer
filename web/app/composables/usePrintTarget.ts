@@ -21,6 +21,17 @@ import type { PrinterEntry } from './usePrinters'
 /** Kept for callers that still think in terms of server-vs-local. */
 export type PrintTarget = 'server' | 'local'
 
+/**
+ * Most copies a single print request may ask for.
+ *
+ * Mirrors `MAX_COPIES` in `src/constants.ts`. Kept in step by hand because the web
+ * app builds independently of the server sources.
+ */
+export const MAX_COPIES = 500
+
+/** Above this the UI confirms the quantity first — a typo guard, not a limit. */
+export const COPIES_CONFIRM_THRESHOLD = 30
+
 export interface PrintOutcome {
   success: boolean
   target: PrintTarget

@@ -146,8 +146,30 @@ async function reconnect() {
 
 const nameDraft = ref('')
 const renaming = ref(false)
+/** The name the draft was last synced from, so an in-progress edit is detectable. */
+let syncedName = ''
 
-watch(selected, printer => { nameDraft.value = printer?.name ?? '' }, { immediate: true })
+/**
+ * Keep the draft in step with the selected printer without eating what's being typed.
+ *
+ * Watching `selected` itself used to reset the field on every 15s poll: `refreshServer()`
+ * rebuilds the printer objects, so the computed yields a new object reference even when
+ * nothing changed, and the watcher fired. Both watchers below key on a *primitive*, so
+ * they only run when the id or the name genuinely changes.
+ */
+
+// Switching printers always discards the draft — it belonged to the other printer.
+watch(() => selected.value?.id ?? null, () => {
+  nameDraft.value = selected.value?.name ?? ''
+  syncedName = nameDraft.value
+}, { immediate: true })
+
+// A rename from elsewhere is adopted only when there's nothing half-typed to lose.
+watch(() => selected.value?.name ?? '', name => {
+  if (nameDraft.value !== syncedName) return
+  nameDraft.value = name
+  syncedName = name
+})
 
 const nameChanged = computed(() =>
   !!selected.value && nameDraft.value.trim().length > 0 && nameDraft.value !== selected.value.name)
@@ -156,8 +178,12 @@ async function saveName() {
   const printer = selected.value
   if (!printer || !nameChanged.value) return
   renaming.value = true
+  const name = nameDraft.value.trim()
   try {
-    await printers.configure(printer.id, { name: nameDraft.value.trim() })
+    await printers.configure(printer.id, { name })
+    // The draft is now the saved truth, so a later external rename can sync again.
+    nameDraft.value = name
+    syncedName = name
     toast.add({ title: 'Printer renamed', color: 'success' })
   } catch (e) {
     toast.add({ title: 'Rename failed', description: (e as Error).message, color: 'error' })
@@ -410,15 +436,23 @@ async function remove() {
         </p>
 
         <UFormField v-if="printers.hasPrinters.value" label="Print to">
+          <!--
+            w-full is load-bearing: the stock USelectMenu trigger is inline-flex, so
+            it collapses to the width of the selected printer's name, and the dropdown
+            is pinned to the trigger width. That left no room for the location text and
+            status dot in the item rows.
+          -->
           <USelectMenu
             :model-value="printers.selectedId.value ?? undefined"
             :items="printerItems"
             value-key="value"
+            class="w-full"
+            :ui="{ content: 'min-w-80' }"
             :searchable="printerItems.length > 6"
             @update:model-value="printers.select"
           >
             <template #item-trailing="{ item }">
-              <span class="flex items-center gap-2 text-xs text-gray-500">
+              <span class="flex items-center gap-2 text-xs text-gray-500 whitespace-nowrap">
                 <span>{{ item.suffix }}</span>
                 <span class="w-2 h-2 rounded-full shrink-0" :class="item.dot" />
               </span>

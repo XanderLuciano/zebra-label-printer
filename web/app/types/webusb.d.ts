@@ -25,6 +25,8 @@ declare global {
   interface USBInterface {
     readonly interfaceNumber: number;
     readonly alternate: USBAlternateInterface;
+    /** True once this page has claimed the interface. Re-claiming resets its endpoints. */
+    readonly claimed: boolean;
   }
 
   interface USBConfiguration {

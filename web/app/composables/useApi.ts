@@ -239,6 +239,41 @@ export interface DebugInfo {
   printerEvents: PrinterEvent[];
 }
 
+/** The error body every endpoint returns on failure. */
+interface ApiErrorBody {
+  error?: string;
+  details?: Array<{ field?: string; message?: string }>;
+}
+
+/**
+ * Turn a `$fetch` rejection into an error a human can act on.
+ *
+ * `$fetch` throws a `FetchError` whose message is just `[POST] "/api/print/label": 400
+ * Bad Request` — the server's actual explanation sits unread on `error.data`. That's
+ * what made a rejected copy count look like an unexplained 400. The field-level
+ * `details` from Zod are folded in so the message names the offending field and its
+ * limit.
+ */
+function apiError(error: unknown): Error {
+  const body = (error as { data?: ApiErrorBody } | null)?.data;
+  const status = (error as { status?: number; statusCode?: number } | null);
+  const code = status?.status ?? status?.statusCode;
+
+  const fields = (body?.details ?? [])
+    .map(d => {
+      const message = d.message?.trim();
+      if (!message) return null;
+      // '(root)' is the server's marker for a whole-body problem; naming it helps nobody.
+      return d.field && d.field !== '(root)' ? `${d.field}: ${message}` : message;
+    })
+    .filter((s): s is string => !!s);
+
+  if (fields.length > 0) return new Error(fields.join('; '));
+  if (body?.error) return new Error(body.error);
+  if (error instanceof Error && error.message) return error;
+  return new Error(code ? `Request failed (HTTP ${code})` : 'Request failed');
+}
+
 export function useApi() {
   const config = useRuntimeConfig();
   // In production, apiBase is empty → use same-origin (relative paths).
@@ -246,15 +281,23 @@ export function useApi() {
   const base = config.public.apiBase as string || '';
 
   async function get<T>(path: string): Promise<T> {
-    return $fetch<T>(`${base}${path}`);
+    try {
+      return await $fetch<T>(`${base}${path}`);
+    } catch (error) {
+      throw apiError(error);
+    }
   }
 
   async function post<T>(path: string, body?: unknown): Promise<T> {
-    return $fetch<T>(`${base}${path}`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: body ? JSON.stringify(body) : undefined,
-    });
+    try {
+      return await $fetch<T>(`${base}${path}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: body ? JSON.stringify(body) : undefined,
+      });
+    } catch (error) {
+      throw apiError(error);
+    }
   }
 
   return {

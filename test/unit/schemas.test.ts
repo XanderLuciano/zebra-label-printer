@@ -15,6 +15,7 @@ import {
   printerCreateSchema,
   printerUpdateSchema
 } from '../../src/schemas'
+import { MAX_COPIES } from '../../src/constants'
 
 describe('textLabelSchema', () => {
   it('accepts valid text request', () => {
@@ -51,9 +52,22 @@ describe('textLabelSchema', () => {
     if (result.success) expect(result.data.copies).toBe(3)
   })
 
-  it('rejects copies over 10', () => {
-    const result = textLabelSchema.safeParse({ lines: ['Hi'], copies: 100 })
+  it('accepts a large batch up to the limit', () => {
+    const result = textLabelSchema.safeParse({ lines: ['Hi'], copies: MAX_COPIES })
+    expect(result.success).toBe(true)
+  })
+
+  it(`rejects copies over ${MAX_COPIES}`, () => {
+    const result = textLabelSchema.safeParse({ lines: ['Hi'], copies: MAX_COPIES + 1 })
     expect(result.success).toBe(false)
+  })
+
+  it('names the limit in the rejection message, so a caller knows what to send', () => {
+    const result = textLabelSchema.safeParse({ lines: ['Hi'], copies: MAX_COPIES + 1 })
+    expect(result.success).toBe(false)
+    if (!result.success) {
+      expect(result.error.issues[0]?.message).toContain(String(MAX_COPIES))
+    }
   })
 
   it('rejects copies of 0', () => {

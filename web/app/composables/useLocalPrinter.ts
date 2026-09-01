@@ -56,12 +56,76 @@ export interface LocalDeviceInfo {
   connected: boolean
 }
 
+/**
+ * Bytes per bulk transfer.
+ *
+ * Windows drives WebUSB through WinUSB, which cancels a transfer that outlives its
+ * patience; macOS's IOKit backend buffers the whole thing instead. Handing over the
+ * data in bounded pieces keeps each individual transfer short enough to complete.
+ * 8 KiB is a multiple of every bulk packet size a Zebra reports (64 and 512).
+ */
+const USB_CHUNK_BYTES = 8192
+
+/** How long to wait before the one retry of a cancelled transfer. */
+const TRANSFER_RETRY_DELAY_MS = 150
+
 // Module-level: connections shared across every consumer, keyed by device id.
 const connections = ref(new Map<string, LocalConnection>())
 const isConnecting = ref(false)
 const lastError = ref<string | null>(null)
 const supported = ref(false)
 let eventsRegistered = false
+
+/**
+ * In-flight `openDevice` calls, keyed by device id.
+ *
+ * Two callers opening the same printer at once used to each run the full
+ * open/claim sequence; the second one's `claimInterface` reset an endpoint the
+ * first was already writing to.
+ */
+const opening = new Map<string, Promise<string>>()
+
+/**
+ * One write at a time per device.
+ *
+ * A bulk endpoint has no notion of interleaved messages — two overlapping
+ * `transferOut` calls produce spliced ZPL at best and a cancelled transfer at
+ * worst. Writes queue behind each other instead.
+ */
+const writeChains = new Map<string, Promise<unknown>>()
+
+function delay(ms: number): Promise<void> {
+  return new Promise(resolve => setTimeout(resolve, ms))
+}
+
+/** Run `work` after any write already queued for this device has settled. */
+function queueWrite<T>(deviceId: string, work: () => Promise<T>): Promise<T> {
+  // A queued write must not inherit its predecessor's failure, hence the catch.
+  const previous = writeChains.get(deviceId) ?? Promise.resolve()
+  const run = previous.catch(() => {}).then(work)
+  // Store a settled-either-way handle so one failure doesn't poison the chain.
+  writeChains.set(deviceId, run.catch(() => {}))
+  return run
+}
+
+/**
+ * Did this transfer fail without moving any data?
+ *
+ * Windows surfaces a re-claimed or reset interface as "The transfer was cancelled".
+ * Nothing reached the printer, so the same bytes can be sent again — which is only
+ * true before any chunk has landed, hence the caller's `sent === 0` guard.
+ */
+function isCancelledTransfer(error: unknown): boolean {
+  if (!(error instanceof Error)) return false
+  if (error.name === 'AbortError') return true
+  return /transfer was cancel/i.test(error.message)
+}
+
+/** Does this error mean our handle is dead rather than our data bad? */
+function isStaleHandle(error: unknown): boolean {
+  return error instanceof Error
+    && (error.name === 'NotFoundError' || error.name === 'NetworkError')
+}
 
 function hex(n: number): string {
   return n.toString(16).padStart(4, '0')
@@ -120,11 +184,37 @@ export function useLocalPrinter() {
    * Zebra printers expose ZPL as a plain bulk OUT endpoint, so finding the first
    * interface with one is enough — no vendor-specific setup.
    *
+   * Idempotent, and safe to call from two places at once. That matters because
+   * several things reach for a device around the same moment — `connect()`, the
+   * `connect` USB event that fires just after permission is granted, and
+   * `reconnectSaved()` from `usePrinters.load()`. Re-running `claimInterface()` on a
+   * device that is already claimed resets the endpoint, and Windows reports any
+   * transfer in flight at that moment as cancelled. macOS's driver tolerates it,
+   * which is why the failure only ever showed up on Windows.
+   *
    * @returns the device id it was stored under.
    */
   async function openDevice(device: USBDevice): Promise<string> {
     const deviceId = deviceIdOf(device)
 
+    // Already ours and live — nothing to do, and re-claiming would break writes.
+    if (connections.value.get(deviceId)?.device.opened) return deviceId
+
+    // Someone else is already opening this one; share their attempt.
+    const inFlight = opening.get(deviceId)
+    if (inFlight) return inFlight
+
+    const attempt = claimDevice(device, deviceId)
+    opening.set(deviceId, attempt)
+    try {
+      return await attempt
+    } finally {
+      opening.delete(deviceId)
+    }
+  }
+
+  /** The actual open/claim sequence. Only ever called via `openDevice`. */
+  async function claimDevice(device: USBDevice, deviceId: string): Promise<string> {
     if (!device.opened) await device.open()
 
     if (device.configuration === null) {
@@ -143,7 +233,9 @@ export function useLocalPrinter() {
       throw new Error('No bulk OUT endpoint found — this device does not look like a USB printer')
     }
 
-    await device.claimInterface(iface.interfaceNumber)
+    if (!iface.claimed) {
+      await device.claimInterface(iface.interfaceNumber)
+    }
 
     // Reassigning the Map is what makes the computed refs re-evaluate; mutating
     // it in place would not.
@@ -160,6 +252,7 @@ export function useLocalPrinter() {
     const next = new Map(connections.value)
     next.delete(deviceId)
     connections.value = next
+    writeChains.delete(deviceId)
   }
 
   /**
@@ -293,49 +386,105 @@ export function useLocalPrinter() {
     }
   }
 
-  /** Release the interface and close one device. */
+  /**
+   * Release the interface and close one device.
+   *
+   * Queued behind any write in progress: releasing the interface mid-transfer is
+   * another way to get a cancelled transfer, and the label would come out truncated.
+   */
   async function disconnect(deviceId: string): Promise<void> {
-    const current = connections.value.get(deviceId)
-    if (!current) return
-    try {
-      await current.device.releaseInterface(current.interfaceNumber)
-      await current.device.close()
-    } catch {
-      // Already gone; nothing to release.
-    } finally {
+    if (!connections.value.has(deviceId)) return
+
+    await queueWrite(deviceId, async () => {
+      const current = connections.value.get(deviceId)
+      if (!current) return
+      try {
+        await current.device.releaseInterface(current.interfaceNumber)
+        await current.device.close()
+      } catch {
+        // Already gone; nothing to release.
+      } finally {
+        forget(deviceId)
+      }
+    }).catch(() => {
+      // A failed predecessor shouldn't leave a stale handle behind.
       forget(deviceId)
+    })
+  }
+
+  /**
+   * Push bytes to a device's bulk OUT endpoint, in chunks.
+   *
+   * The one retry only applies before anything has been transferred. Resending
+   * after a partial write would leave the printer with the tail of one payload
+   * followed by a whole second copy, so a mid-stream failure is reported as-is.
+   */
+  async function transfer(deviceId: string, data: Uint8Array<ArrayBuffer>): Promise<void> {
+    let sent = 0
+
+    while (sent < data.length) {
+      const chunk = data.subarray(sent, Math.min(sent + USB_CHUNK_BYTES, data.length))
+      const connection = connections.value.get(deviceId)
+      if (!connection?.device.opened) {
+        throw new Error('The printer was disconnected mid-transfer')
+      }
+
+      try {
+        const result = await connection.device.transferOut(connection.endpointNumber, chunk)
+        if (result.status !== 'ok') {
+          throw new Error(`USB transfer failed (${result.status})`)
+        }
+      } catch (error: unknown) {
+        // Nothing has landed yet, so one retry is safe. This covers the Windows case
+        // where the endpoint was momentarily reset while the device was being
+        // re-opened by something else.
+        if (sent === 0 && isCancelledTransfer(error)) {
+          await delay(TRANSFER_RETRY_DELAY_MS)
+          const retryOn = connections.value.get(deviceId)
+          if (!retryOn?.device.opened) throw error
+          const retry = await retryOn.device.transferOut(retryOn.endpointNumber, chunk)
+          if (retry.status !== 'ok') {
+            throw new Error(`USB transfer failed (${retry.status})`, { cause: error })
+          }
+        } else {
+          throw error
+        }
+      }
+
+      sent += chunk.length
     }
   }
 
   /**
    * Send raw ZPL to a specific connected printer.
    *
+   * Waits for any open/claim in progress on the device before writing: a transfer
+   * that overlaps a `claimInterface()` is the exact race Windows reports as "the
+   * transfer was cancelled". Writes to the same device are also serialised, so two
+   * callers can't interleave on one endpoint.
+   *
    * @param deviceId - Which paired device to print on.
    * @returns true on a successful transfer. On failure, read `lastError`.
    */
   async function printZpl(deviceId: string, zpl: string): Promise<boolean> {
-    const current = connections.value.get(deviceId)
-    if (!current?.device.opened) {
+    // Don't start writing into an endpoint that's being re-claimed.
+    await opening.get(deviceId)?.catch(() => {})
+
+    if (!connections.value.get(deviceId)?.device.opened) {
       lastError.value = 'That local printer is not connected'
       return false
     }
 
     lastError.value = null
+    const data = new TextEncoder().encode(zpl.endsWith('\n') ? zpl : `${zpl}\n`)
 
     try {
-      const data = new TextEncoder().encode(zpl.endsWith('\n') ? zpl : `${zpl}\n`)
-      const result = await current.device.transferOut(current.endpointNumber, data)
-
-      if (result.status !== 'ok') {
-        throw new Error(`USB transfer failed (${result.status})`)
-      }
+      await queueWrite(deviceId, () => transfer(deviceId, data))
       return true
     } catch (error: unknown) {
       lastError.value = errorMessage(error, 'Failed to send data to the printer')
       // The device vanished mid-transfer; drop our stale handle.
-      if (error instanceof Error && (error.name === 'NotFoundError' || error.name === 'NetworkError')) {
-        forget(deviceId)
-      }
+      if (isStaleHandle(error)) forget(deviceId)
       return false
     }
   }

@@ -15,6 +15,7 @@ import type { LabelTemplate } from '../composables/useTemplateEngine'
 import {
   resolveTemplate, toPrintElements, usedVariables, sizeKey, SIZE_PRESETS,
 } from '../composables/useTemplateEngine'
+import { COPIES_CONFIRM_THRESHOLD, MAX_COPIES } from '../composables/usePrintTarget'
 
 const api = useApi()
 const toast = useToast()
@@ -29,6 +30,8 @@ const template = ref<LabelTemplate | null>(null)
 const values = reactive<Record<string, string>>({})
 const copies = ref(1)
 const printing = ref(false)
+/** Open while a large quantity is waiting to be confirmed. */
+const confirmQuantityOpen = ref(false)
 
 /** Label size to render for. Defaults to the template's own base size. */
 const widthDots = ref(406)
@@ -194,19 +197,66 @@ function clearFields() {
 }
 
 // ─── Printing ───────────────────────────────────────────────────────────────
-async function print() {
-  const elements = printElements.value
-  if (!elements.length) {
+
+/**
+ * The copy count as a whole number inside the range the API accepts.
+ *
+ * `v-model.number` hands back `NaN` for an empty box, and `:max` on a number input
+ * is only a hint to the spinner — a typed or pasted value sails past it. Clamping
+ * here is what stops an out-of-range quantity turning into an opaque 400.
+ */
+const safeCopies = computed(() => {
+  const n = Math.floor(Number(copies.value))
+  if (!Number.isFinite(n) || n < 1) return 1
+  return Math.min(n, MAX_COPIES)
+})
+
+/** True when the quantity is large enough to be worth a second look. */
+const needsConfirm = computed(() => safeCopies.value > COPIES_CONFIRM_THRESHOLD)
+
+/** Note shown under the Copies field when the typed value isn't what will print. */
+const copiesHint = computed(() => {
+  const typed = Number(copies.value)
+  if (Number.isFinite(typed) && typed > MAX_COPIES) {
+    return `Capped at ${MAX_COPIES} — the most the printer accepts in one request.`
+  }
+  if (needsConfirm.value) {
+    return `Over ${COPIES_CONFIRM_THRESHOLD}, so you'll be asked to confirm.`
+  }
+  return ''
+})
+
+function print() {
+  if (!printElements.value.length) {
     toast.add({ title: 'Nothing to print', description: 'This template has no visible elements.', color: 'warning' })
     return
   }
+  // A mistyped quantity wastes a roll of labels, so large runs are confirmed
+  // rather than blocked.
+  if (needsConfirm.value) {
+    confirmQuantityOpen.value = true
+    return
+  }
+  void runPrint()
+}
+
+function confirmQuantity() {
+  confirmQuantityOpen.value = false
+  void runPrint()
+}
+
+async function runPrint() {
+  const elements = printElements.value
+  if (!elements.length) return
+
+  const count = safeCopies.value
   printing.value = true
   try {
-    const res = await printLabel({ elements, copies: copies.value })
+    const res = await printLabel({ elements, copies: count })
     toast.add(res.success
       ? {
           title: res.target === 'local' ? 'Sent to local USB printer' : 'Sent to printer',
-          description: `${template.value?.name} · ${copies.value} ${copies.value === 1 ? 'copy' : 'copies'}`,
+          description: `${template.value?.name} · ${count} ${count === 1 ? 'copy' : 'copies'}`,
           color: 'success',
         }
       : { title: 'Print failed', description: res.error, color: 'error' })
@@ -340,9 +390,11 @@ onMounted(() => {
               <USelect v-model="currentSizeKey" :items="sizeItems" class="w-full" />
             </UFormField>
             <UFormField label="Copies">
-              <UInput v-model.number="copies" type="number" :min="1" :max="10" class="w-full" />
+              <UInput v-model.number="copies" type="number" :min="1" :max="MAX_COPIES" class="w-full" />
             </UFormField>
           </div>
+
+          <p v-if="copiesHint" class="text-xs text-gray-500">{{ copiesHint }}</p>
 
           <p v-if="!isBaseSize" class="text-xs text-gray-500">
             Printing at a size other than the template's
@@ -355,7 +407,7 @@ onMounted(() => {
             color="primary"
             size="lg"
             block
-            :label="`Print ${copies > 1 ? copies + ' labels' : 'label'}`"
+            :label="`Print ${safeCopies > 1 ? safeCopies + ' labels' : 'label'}`"
             :loading="printing"
             :disabled="!printElements.length"
             @click="print"
@@ -394,5 +446,39 @@ onMounted(() => {
         </p>
       </UCard>
     </div>
+
+    <!--
+      Large-quantity confirmation. Deliberately not a block: printing 200 labels is a
+      normal thing to want, but so is typing 200 when you meant 20, and the printer
+      won't ask.
+    -->
+    <UModal v-model:open="confirmQuantityOpen" title="Print this many labels?">
+      <template #body>
+        <div class="space-y-3">
+          <p class="text-sm">
+            This will print
+            <span class="font-medium">{{ safeCopies }} copies</span>
+            of <span class="font-medium">{{ template?.name }}</span>.
+          </p>
+          <p class="text-xs text-gray-500">
+            Anything over {{ COPIES_CONFIRM_THRESHOLD }} is confirmed first, in case of a
+            mistyped quantity. The printer repeats the label from its own buffer, so it
+            starts immediately and can only be stopped at the printer.
+          </p>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex justify-end gap-2 w-full">
+          <UButton label="Cancel" color="neutral" variant="soft" @click="confirmQuantityOpen = false" />
+          <UButton
+            :label="`Print ${safeCopies} labels`"
+            icon="i-lucide-printer"
+            color="primary"
+            :loading="printing"
+            @click="confirmQuantity"
+          />
+        </div>
+      </template>
+    </UModal>
   </div>
 </template>

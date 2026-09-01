@@ -4,6 +4,8 @@
  * Served at GET /api/docs/openapi.json and rendered via Swagger UI at GET /api/docs.
  */
 
+import { MAX_COPIES } from './constants'
+
 export const OPENAPI_SPEC = {
   openapi: '3.1.0',
   info: {
@@ -259,7 +261,7 @@ export const OPENAPI_SPEC = {
                   copies: {
                     type: 'integer',
                     minimum: 1,
-                    maximum: 10,
+                    maximum: MAX_COPIES,
                     default: 1
                   },
                   target: { $ref: '#/components/schemas/PrintTarget' },
@@ -462,7 +464,7 @@ export const OPENAPI_SPEC = {
                     minItems: 1,
                     items: { $ref: '#/components/schemas/LabelElement' }
                   },
-                  copies: { type: 'integer', minimum: 1, maximum: 10 },
+                  copies: { type: 'integer', minimum: 1, maximum: MAX_COPIES },
                   target: { $ref: '#/components/schemas/PrintTarget' },
                   printerId: { $ref: '#/components/schemas/PrinterId' },
                   printerName: {
@@ -515,7 +517,7 @@ export const OPENAPI_SPEC = {
                     minItems: 1,
                     items: { $ref: '#/components/schemas/LabelElement' }
                   },
-                  copies: { type: 'integer', minimum: 1, maximum: 10 },
+                  copies: { type: 'integer', minimum: 1, maximum: MAX_COPIES },
                   widthDots: { type: 'integer', minimum: 1, description: 'Label width in dots (defaults to the configured label size)' },
                   heightDots: { type: 'integer', minimum: 1, description: 'Label height in dots (defaults to the configured label size)' }
                 }
@@ -660,7 +662,7 @@ export const OPENAPI_SPEC = {
                     maxItems: 20,
                     example: ['Widget', 'SN: {serial}']
                   },
-                  copies: { type: 'integer', minimum: 1, maximum: 500 },
+                  copies: { type: 'integer', minimum: 1, maximum: MAX_COPIES },
                   serialStart: { type: 'integer', minimum: 0, default: 1 },
                   printerId: { $ref: '#/components/schemas/PrinterId' },
                   serialFormat: { type: 'string', enum: ['#', '##', '###', '####', '#####'], default: '###' }

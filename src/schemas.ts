@@ -7,12 +7,23 @@
 
 import { z } from 'zod'
 import {
+  MAX_COPIES,
   MEDIA_TRACKINGS,
   MIN_LABEL_WIDTH_DOTS,
   MIN_LABEL_HEIGHT_DOTS,
   MAX_LABEL_LENGTH_DOTS,
   SERVER_PRINTER_TRANSPORTS
 } from './constants'
+
+/**
+ * Copy count shared by every print endpoint.
+ *
+ * The messages spell out the limit: the old bare `.max(10)` produced Zod's generic
+ * "Too big" text, which told a caller nothing about what it was allowed to send.
+ */
+const copiesSchema = z.number().int()
+  .min(1, 'At least 1 copy required')
+  .max(MAX_COPIES, `Too many copies — the maximum is ${MAX_COPIES} per request`)
 
 /** Widest supported print head (4" at 600 DPI) */
 const MAX_LABEL_WIDTH_DOTS = 2400
@@ -80,7 +91,7 @@ const printerSelectionFields = {
 /** POST /api/print/text */
 export const textLabelSchema = z.object({
   lines: z.array(z.string().min(1)).min(1, 'At least one line required').max(20, 'Max 20 lines'),
-  copies: z.number().int().min(1).max(10).optional(),
+  copies: copiesSchema.optional(),
   ...printerSelectionFields
 }).strict()
 
@@ -170,14 +181,14 @@ const labelElementSchema = z.discriminatedUnion('type', [
 /** POST /api/print/label */
 export const labelSchema = z.object({
   elements: z.array(labelElementSchema).min(1, 'At least one element required'),
-  copies: z.number().int().min(1).max(10).optional(),
+  copies: copiesSchema.optional(),
   ...printerSelectionFields
 }).strict()
 
 /** POST /api/render/zpl — build ZPL from elements without printing (for previews) */
 export const renderZplSchema = z.object({
   elements: z.array(labelElementSchema).min(1, 'At least one element required'),
-  copies: z.number().int().min(1).max(10).optional(),
+  copies: copiesSchema.optional(),
   widthDots: z.number().int().min(1).optional(),
   heightDots: z.number().int().min(1).optional()
 }).strict()
@@ -280,7 +291,7 @@ export const templateSchema = z.object({
  */
 export const serialLabelSchema = z.object({
   lines: z.array(z.string().min(1)).min(1, 'At least one line required').max(20, 'Max 20 lines'),
-  copies: z.number().int().min(1).max(500, 'Max 500 copies'),
+  copies: copiesSchema,
   serialStart: z.number().int().min(0).default(1),
   serialFormat: z.enum(['#', '##', '###', '####', '#####']).optional().default('###'),
   /** Configured printer to print on. Omit to use the default printer. */

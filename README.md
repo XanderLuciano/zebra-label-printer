@@ -182,7 +182,7 @@ Print a multi-line text label.
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `lines` | `string[]` | Yes | — | 1–20 lines of text |
-| `copies` | `integer` | No | `1` | Number of copies (1–10) |
+| `copies` | `integer` | No | `1` | Number of copies (1–500) |
 
 ### POST `/api/print/barcode`
 
@@ -220,7 +220,7 @@ Print a composed label from element definitions. Uses the configured label size 
 | Field | Type | Required | Default | Description |
 |-------|------|----------|---------|-------------|
 | `elements` | `array` | Yes | — | Array of label elements (min 1) |
-| `copies` | `integer` | No | `1` | Number of copies (1–10) |
+| `copies` | `integer` | No | `1` | Number of copies (1–500) |
 
 Each element has a `type` discriminator. Supported element types:
 
