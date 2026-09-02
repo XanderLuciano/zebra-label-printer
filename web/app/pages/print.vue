@@ -16,10 +16,16 @@ import {
   resolveTemplate, toPrintElements, usedVariables, sizeKey, SIZE_PRESETS,
 } from '../composables/useTemplateEngine'
 import { COPIES_CONFIRM_THRESHOLD, MAX_COPIES } from '../composables/usePrintTarget'
+import { sameLabelSize, findPrinterForSize } from '../utils/label-size-match'
 
 const api = useApi()
 const toast = useToast()
 const { printLabel, load: loadPrinters, printer: activePrinter } = usePrintTarget()
+const printers = usePrinters()
+
+// Keep printer readiness fresh while the page is open — the size-mismatch dialog
+// only offers printers that are actually ready to take the job.
+printers.watchWhileMounted()
 
 // ─── State ──────────────────────────────────────────────────────────────────
 const templates = ref<StoredTemplate[]>([])
@@ -32,6 +38,10 @@ const copies = ref(1)
 const printing = ref(false)
 /** Open while a large quantity is waiting to be confirmed. */
 const confirmQuantityOpen = ref(false)
+/** Open while a label-size mismatch is waiting on a decision. */
+const sizeMismatchOpen = ref(false)
+/** Printer chosen in the mismatch dialog; undefined means the selected printer. */
+const overridePrinterId = ref<string | undefined>(undefined)
 
 /** Label size to render for. Defaults to the template's own base size. */
 const widthDots = ref(406)
@@ -142,6 +152,31 @@ const isBaseSize = computed(() =>
   && heightDots.value === template.value.baseHeightDots
 )
 
+// ─── Label size vs the selected printer ─────────────────────────────────────
+
+/** The size this print resolves at, in dots. */
+const printSize = computed(() => ({ widthDots: widthDots.value, heightDots: heightDots.value }))
+
+/**
+ * Is the selected printer loaded with different stock than this label?
+ *
+ * Elements are resolved into dot coordinates for `printSize`, but the printer
+ * prints at whatever geometry it's configured for — a mismatch comes out cropped
+ * or floating on a corner of the label, with no error from anything.
+ */
+const sizeMismatch = computed(() => {
+  const p = activePrinter.value
+  return !!p && !sameLabelSize(p.labelSize, printSize.value)
+})
+
+/** A ready printer configured with exactly this label size, if there is one. */
+const matchingPrinter = computed(() =>
+  findPrinterForSize(printers.printers.value, printSize.value, activePrinter.value?.id))
+
+/** Where the offered printer lives, for the dialog text. */
+const matchingPrinterLocation = computed(() =>
+  matchingPrinter.value?.connection === 'server' ? 'the server' : 'this browser (USB)')
+
 // ─── Loading ────────────────────────────────────────────────────────────────
 async function refreshList() {
   loadingList.value = true
@@ -231,6 +266,31 @@ function print() {
     toast.add({ title: 'Nothing to print', description: 'This template has no visible elements.', color: 'warning' })
     return
   }
+  overridePrinterId.value = undefined
+  // Size first, quantity second: there's no point confirming 50 copies of a
+  // label that would come out cropped.
+  if (sizeMismatch.value) {
+    sizeMismatchOpen.value = true
+    return
+  }
+  proceedAfterSizeCheck()
+}
+
+/** Print on the matching printer offered in the mismatch dialog. */
+function printOnMatch() {
+  overridePrinterId.value = matchingPrinter.value?.id
+  sizeMismatchOpen.value = false
+  proceedAfterSizeCheck()
+}
+
+/** Print on the selected printer despite the mismatch. */
+function printAnyway() {
+  sizeMismatchOpen.value = false
+  proceedAfterSizeCheck()
+}
+
+/** Past the size check; a large quantity still gets confirmed. */
+function proceedAfterSizeCheck() {
   // A mistyped quantity wastes a roll of labels, so large runs are confirmed
   // rather than blocked.
   if (needsConfirm.value) {
@@ -250,18 +310,21 @@ async function runPrint() {
   if (!elements.length) return
 
   const count = safeCopies.value
+  const printerId = overridePrinterId.value
   printing.value = true
   try {
-    const res = await printLabel({ elements, copies: count })
+    const res = await printLabel({ elements, copies: count }, printerId)
+    const onPrinter = printerId && res.printerName ? ` · on ${res.printerName}` : ''
     toast.add(res.success
       ? {
           title: res.target === 'local' ? 'Sent to local USB printer' : 'Sent to printer',
-          description: `${template.value?.name} · ${count} ${count === 1 ? 'copy' : 'copies'}`,
+          description: `${template.value?.name} · ${count} ${count === 1 ? 'copy' : 'copies'}${onPrinter}`,
           color: 'success',
         }
       : { title: 'Print failed', description: res.error, color: 'error' })
   } finally {
     printing.value = false
+    overridePrinterId.value = undefined
   }
 }
 
@@ -396,6 +459,14 @@ onMounted(() => {
 
           <p v-if="copiesHint" class="text-xs text-gray-500">{{ copiesHint }}</p>
 
+          <!-- Early warning, so the mismatch isn't a surprise at the Print button. -->
+          <p v-if="sizeMismatch && activePrinter" class="text-xs text-amber-600 dark:text-amber-500">
+            {{ activePrinter.name }} is configured for
+            {{ activePrinter.labelSize.widthDots }}×{{ activePrinter.labelSize.heightDots }} dots
+            ({{ activePrinter.labelSize.name }}), not this label's
+            {{ widthDots }}×{{ heightDots }}. You'll be asked before printing.
+          </p>
+
           <p v-if="!isBaseSize" class="text-xs text-gray-500">
             Printing at a size other than the template's
             {{ template.baseWidthDots }}×{{ template.baseHeightDots }} base. The design
@@ -446,6 +517,56 @@ onMounted(() => {
         </p>
       </UCard>
     </div>
+
+    <!--
+      Label-size mismatch. The elements are resolved in dot coordinates for the
+      chosen size, but the printer prints at its own configured geometry, so a
+      mismatch comes out silently cropped. When another ready printer is loaded
+      with the right stock, printing there is offered as the default way out;
+      printing anyway stays available because the printer's *configuration* can
+      be stale while the stock in it is actually right.
+    -->
+    <UModal v-model:open="sizeMismatchOpen" title="Label size doesn't match the printer">
+      <template #body>
+        <div class="space-y-3">
+          <p class="text-sm">
+            This label is
+            <span class="font-medium">{{ widthDots }}×{{ heightDots }} dots</span>,
+            but <span class="font-medium">{{ activePrinter?.name }}</span> is configured for
+            <span class="font-medium">{{ activePrinter?.labelSize.widthDots }}×{{ activePrinter?.labelSize.heightDots }} dots
+              ({{ activePrinter?.labelSize.name }})</span>.
+            Printing there would come out cropped or misplaced.
+          </p>
+          <p v-if="matchingPrinter" class="text-sm">
+            <span class="font-medium">{{ matchingPrinter.name }}</span>
+            on {{ matchingPrinterLocation }} is loaded with this label size and ready.
+          </p>
+          <p v-else class="text-sm text-gray-500">
+            No ready printer is configured for this size. Change the label size above,
+            or pick a different printer in Settings.
+          </p>
+        </div>
+      </template>
+      <template #footer>
+        <div class="flex flex-wrap justify-end gap-2 w-full">
+          <UButton label="Cancel" color="neutral" variant="soft" @click="sizeMismatchOpen = false" />
+          <UButton
+            :label="`Print anyway on ${activePrinter?.name}`"
+            icon="i-lucide-triangle-alert"
+            color="warning"
+            variant="soft"
+            @click="printAnyway"
+          />
+          <UButton
+            v-if="matchingPrinter"
+            :label="`Print on ${matchingPrinter.name}`"
+            icon="i-lucide-printer"
+            color="primary"
+            @click="printOnMatch"
+          />
+        </div>
+      </template>
+    </UModal>
 
     <!--
       Large-quantity confirmation. Deliberately not a block: printing 200 labels is a
