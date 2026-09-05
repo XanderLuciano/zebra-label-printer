@@ -13,8 +13,8 @@ import {
   emptyTemplate,
   type LabelTemplate,
   type TemplateElement
-} from '../../web/app/composables/useTemplateEngine'
-import { measureZplText } from '../../web/app/composables/useZplFonts'
+} from '../../src/template-engine'
+import { measureZplText } from '../../src/zpl-fonts'
 
 const target = { widthDots: 406, heightDots: 203 }
 

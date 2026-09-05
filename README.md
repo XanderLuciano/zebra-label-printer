@@ -36,7 +36,10 @@ Everything runs on **port 3420**: web dashboard at `/`, API at `/api/*`, docs at
   printers doesn't mean reconfiguring one
 - **Print from any browser** — a USB printer plugged into your own machine works over WebUSB
   without installing a second server, and shows up in the same printer list
-- **Zod validation** — all endpoints validated, structured 400s with field-level errors
+- **Template webhooks** — design a label once, then `POST /api/print/template/part-2x1` with its
+  variables from any service or client-side JavaScript
+- **Zod validation** — all endpoints validated, structured 400s with a stable error `code` and
+  field-level details
 - **OpenAPI docs** — interactive Swagger UI at `/api/docs`
 - **ZPL builder** — fluent TypeScript API for text, 8 barcode types, QR codes, Data Matrix
 - **CLI tool** — `zebra-label print-text`, `zebra-label print-bc`, `zebra-label discover`
@@ -72,7 +75,14 @@ cd web && npm install && npm run dev   # → :3000
 
 ## API Reference
 
-All endpoints accept JSON. All POST bodies are validated with Zod — invalid requests get structured 400s with field-level error details.
+All endpoints accept JSON. All POST/PUT bodies are validated with Zod — invalid requests get
+structured 400s with a machine-readable `code` and field-level details. Every endpoint is
+callable cross-origin from a browser; see [`ZEBRA_CORS_ORIGINS`](#environment-variables) to
+restrict that.
+
+**`/api/docs` is the authoritative reference.** Request schemas there are generated from the same
+Zod schemas the server validates against, so a documented limit, enum, or default is the one
+actually enforced — it can't drift from the code.
 
 For full interactive docs, start the server and open **http://localhost:3420/api/docs** (Swagger UI).
 
@@ -104,6 +114,9 @@ For full interactive docs, start the server and open **http://localhost:3420/api
 | POST | `/api/print/qr` | Print QR code label |
 | POST | `/api/print/zpl` | Print raw ZPL (text/plain or JSON) |
 | POST | `/api/print/label` | Print composed label from elements |
+| POST | `/api/print/template/:shortName` | **Print a saved template from its variables** ([below](#printing-a-template-by-name-webhooks)) |
+| GET | `/api/templates` | List templates and built-in presets |
+| GET | `/api/templates/:shortName/schema` | What variables a template takes |
 
 **Examples:**
 
@@ -168,12 +181,26 @@ curl -X POST http://localhost:3420/api/print/label \
     ]
   }'
 
-# Validation errors return structured details:
+# Print a saved template by name, passing its variables (see below)
+curl -X POST http://localhost:3420/api/print/template/part-2x1 \
+  -H "Content-Type: application/json" \
+  -d '{"variables": {"partNumber": "135853-002", "rev": "C"}, "quantity": 3, "allowMissingVariables": true}'
+
+# Validation errors return a stable `code` plus field-level details:
 curl -X POST http://localhost:3420/api/print/text \
   -H "Content-Type: application/json" \
   -d '{"lines": []}'
-# → { "error": "Validation failed", "details": [{ "field": "lines", "message": "At least one line required" }] }
+# → {
+#      "error": "Validation failed",
+#      "code": "VALIDATION_FAILED",
+#      "message": "lines: At least one line required",
+#      "details": [{ "field": "lines", "message": "At least one line required", "code": "too_small" }]
+#    }
 ```
+
+Branch on `code`, not on the message. `error` and `message` are written for people and may be
+reworded; `code` is the contract. Treat an unrecognised code as a generic failure of its HTTP
+status class.
 
 ### POST `/api/print/text`
 
@@ -307,6 +334,158 @@ curl -X POST http://localhost:3420/api/print/label \
 ```
 
 > **Note:** Use only ASCII characters in text content. Zebra printers do not support UTF-8 — multi-byte characters (em dashes, middle dots, accented letters) will render as garbled output.
+
+### Printing a template by name (webhooks)
+
+Design a label once in the web designer, give it a **short name**, and any other service can
+print it by POSTing that template's variables as JSON. The caller needs to know a short name
+and the variable names — nothing about the layout, the label size, or which printer is the
+default — so you can redesign the label without breaking a single integration.
+
+```bash
+curl -X POST http://localhost:3420/api/print/template/part-2x1 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "variables": {
+      "partName": "FTS Lens Mount",
+      "partNumber": "135853-002",
+      "rev": "C",
+      "vendor": "NRG",
+      "ticket": "PI-1042",
+      "serial": "NRG-001"
+    },
+    "quantity": 3
+  }'
+```
+
+**Which templates can I print?** `GET /api/templates` lists everything with its `shortName`.
+The four built-in presets ship with names ready to use: `part-2x1`, `bag-2x1`,
+`part-3x5-landscape`, `asset-3x5-landscape`.
+
+**What variables does a template take?** Ask it:
+
+```bash
+curl http://localhost:3420/api/templates/part-2x1/schema
+```
+
+Returns each variable's name, its label, an example value, and whether it is required — enough
+to build a request without opening the designer.
+
+#### Request fields
+
+Every field is optional. An empty body prints one copy of a template that takes no variables, on
+the default printer, at that printer's configured stock.
+
+| Field | Default | Notes |
+|-------|---------|-------|
+| `variables` | `{}` | Values by name. Numbers and booleans are stringified for you |
+| `quantity` | `1` | `copies` is accepted as a synonym |
+| `dryRun` | `false` | Render and return the ZPL without printing or recording a job |
+| `allowMissingVariables` | `false` | Print blanks instead of rejecting absent variables |
+
+`printerId`, `printerName`, `labelSize`, and `target` behave exactly as on the other print
+endpoints — see [Printers and Label Sizes](#printers-and-label-sizes). **`/api/docs` is the
+authoritative reference** for types, limits, and responses.
+
+**Flat payloads work too**, for services whose payload shape you can't change. Any top-level key
+that isn't one of the fields above is read as a variable:
+
+```bash
+curl -X POST http://localhost:3420/api/print/template/part-2x1 \
+  -H "Content-Type: application/json" \
+  -d '{"partNumber": "135853-002", "rev": "C", "quantity": 2}'
+```
+
+The one limitation: a variable named `quantity` (or any other field above) can only be sent
+nested under `variables`.
+
+#### From browser JavaScript
+
+CORS is open by default, so this works from any page:
+
+```js
+const res = await fetch('http://printer.local:3420/api/print/template/part-2x1', {
+  method: 'POST',
+  headers: { 'Content-Type': 'application/json' },
+  body: JSON.stringify({ variables: { partNumber: '135853-002' }, quantity: 1 }),
+})
+const result = await res.json()
+if (!res.ok) throw new Error(`${result.code}: ${result.error}`)
+```
+
+> [!WARNING]
+> With no `ZEBRA_API_KEY` set, this endpoint is unauthenticated — **any web page your operators
+> visit can print up to 500 labels to your printer**, with no interaction. Set `ZEBRA_API_KEY`
+> on any install reachable from a network you don't control, and narrow `ZEBRA_CORS_ORIGINS` to
+> the sites that should be allowed to print. The built-in rate limit
+> (`ZEBRA_PRINT_RATE_LIMIT`, 120/min per client) bounds a runaway loop; it is not a substitute
+> for an API key.
+
+With an API key set, cross-origin callers authenticate with a header or a query parameter:
+
+```js
+headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${key}` }
+// or: /api/print/template/part-2x1?key=YOUR_KEY
+```
+
+#### Response
+
+```json
+{
+  "success": true,
+  "jobId": "job_1788561359824_u1fnd9",
+  "queued": false,
+  "target": "server",
+  "printerId": "prt_a1b2c3",
+  "labelSize": { "widthDots": 406, "heightDots": 203, "dpi": 203 },
+  "quantity": 3,
+  "template": { "id": "tpl_builtin_part_2x1", "shortName": "part-2x1", "name": "Part Label 2x1" },
+  "warnings": []
+}
+```
+
+`queued: true` is **not** a failure: the printer was unreachable, so the job is saved and will
+go out when it reconnects. Poll `GET /api/jobs/{jobId}` if you need to know that a label
+physically came out.
+
+`warnings` carries non-fatal observations. The common one is `LABEL_SIZE_MISMATCH` — the
+template was designed for one label size and is printing on another, so the layout was scaled
+to fit. That's supported (positions are stored as percentages), but it's also the usual way to
+get a surprising label, so it's reported.
+
+#### Errors
+
+Failures carry a stable `code` to branch on, alongside the human-readable `error`:
+
+```json
+{
+  "error": "Unknown variable: partNumbr",
+  "code": "UNKNOWN_VARIABLES",
+  "message": "This template accepts: partName, partNumber, rev, vendor, ticket, serial.",
+  "accepts": ["partName", "partNumber", "rev", "vendor", "ticket", "serial"],
+  "unknown": ["partNumbr"]
+}
+```
+
+Branch on `code`, never on the message. The full list, with the HTTP status each one answers
+with, is in the `ApiError` schema at `/api/docs`. The ones specific to this endpoint:
+`UNKNOWN_VARIABLES` and `MISSING_VARIABLES` (400), `TEMPLATE_NOT_FOUND` (404), `RATE_LIMITED`
+(429). Treat an unrecognised code as a generic failure of its status class.
+
+Retrying is safe for `RATE_LIMITED` and `NO_PRINTER`. It is **not** safe for `PRINT_FAILED`
+without checking the job first — a label may already have come out.
+
+Two deliberate strictnesses, both because the output is physical:
+
+- **A misspelled variable name is an error, not an ignored field.** Otherwise `partNumbr`
+  prints a label with a blank where the part number should be — something the caller can't see
+  and the operator can't diagnose.
+- **A variable's sample value is never printed.** The designer falls back to samples so an
+  unfilled template still previews; doing that on a real print would put the sample part
+  number on actual stock, producing a label that looks correct and isn't.
+
+Use `dryRun: true` while wiring up an integration — it returns the exact ZPL that would be
+sent, without printing or recording anything.
 
 ### POST `/api/print/serial`
 
@@ -460,10 +639,17 @@ const result = await queue.submit('text', { lines: ['Hello'] }, () => zpl);
 | Variable | Default | Description |
 |----------|---------|-------------|
 | `ZEBRA_PRINTER` | auto-detect | CUPS printer name |
-| `ZEBRA_API_KEY` | none | API key for Bearer auth |
+| `ZEBRA_API_KEY` | none | API key for Bearer auth. **Set this on anything reachable from a network you don't control** — the print endpoints spend label stock |
 | `PORT` | 3420 | Server port |
 | `ZEBRA_DB_PATH` | `./data/zebra-label-printer.db` | SQLite database path (`install.sh` sets it to the data directory below) |
+| `ZEBRA_CORS_ORIGINS` | `*` | Comma-separated origins allowed to call the API from a browser. Anything else gets no CORS header and is refused by the browser |
+| `ZEBRA_PRINT_RATE_LIMIT` | `120` | Template-print requests per minute, per client address. `0` disables |
+| `ZEBRA_TCP_PORT` | 9100 | Raw ZPL passthrough port. `0` disables |
 | `NUXT_PUBLIC_API_BASE` | `http://localhost:3420` | API URL for web UI |
+
+Behind a reverse proxy, every request looks like it comes from the proxy, so the rate limit
+becomes effectively global rather than per-client. `X-Forwarded-For` is deliberately ignored —
+trusting it would let any caller bypass the limit by varying the header.
 
 ### What persists, and where
 
@@ -475,6 +661,11 @@ and are never written to the database, so customising one means saving a copy
 the code, they can't be deleted either: an example removed under the old
 seeded-rows model reappears as a preset after upgrading. Anything you had
 customised is kept as your own editable template.
+
+A template's **short name** — the slug in its webhook URL — persists with the template. Saving
+a copy of a preset does *not* copy its short name: the preset still answers on that URL, so the
+copy starts without one and you assign it in the designer. Short names are unique across your
+own templates and the presets together.
 
 `install.sh` keeps the database **outside** the git clone (whose `dist-zebra/` is
 replaced wholesale on every build) at a platform default:
@@ -500,11 +691,14 @@ in Settings deletes its stored configuration from the browser.
 
 ```
 src/              → TypeScript library + API server
-  server/         → Modular HTTP server
-  db/             → SQLite persistence (printers, jobs, logs, settings)
+  server/         → Modular HTTP server (routes, CORS, error envelope, rate limiting)
+  db/             → SQLite persistence (printers, jobs, logs, settings, templates)
   printer-registry.ts → Resolves a printer id to a connection and its label geometry
   queue.ts        → Persistent job queue with background processor
-web/              → Nuxt 4 web dashboard
+  template-engine.ts  → Resolves a template + variables into printable elements
+  zpl-fonts.ts    → Measured ^A font metrics, so text lands where the printer puts it
+web/              → Nuxt 4 web dashboard (re-exports the two modules above, so the
+                    designer preview and a webhook print can't disagree)
 Dockerfile        → Docker image
 docker-compose.yml→ Docker orchestration
 install.sh        → One-command install script

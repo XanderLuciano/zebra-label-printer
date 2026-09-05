@@ -2,15 +2,28 @@
  * OpenAPI 3.1 specification for the Zebra Label Printer API.
  *
  * Served at GET /api/docs/openapi.json and rendered via Swagger UI at GET /api/docs.
+ *
+ * **Request bodies are generated, not written here.** Every `*Request` schema in
+ * `components.schemas` comes from the Zod schema that validates it, via
+ * `./openapi-zod`, so a limit or enum cannot be documented differently from what
+ * the server enforces. Field prose for those lives in `.describe()` in `./schemas`.
+ *
+ * Still hand-written: paths, endpoint prose, examples, and response schemas —
+ * nothing validates a response, so there is no definition to generate from.
+ * `test/unit/openapi-drift.test.ts` guards whatever remains duplicated.
  */
 
-import { MAX_COPIES } from './constants'
+import { generateRequestSchemas } from './openapi-zod'
+import { CURRENT_VERSION } from './updater'
+
+/** Generated once at module load, not per request. */
+const GENERATED_REQUEST_SCHEMAS = generateRequestSchemas()
 
 export const OPENAPI_SPEC = {
   openapi: '3.1.0',
   info: {
     title: 'Zebra Label Printer API',
-    version: '0.5.0',
+    version: CURRENT_VERSION,
     description:
       'Network webhook API for the Zebra GK420d label printer. ' +
       'Print text labels, barcodes (1D + 2D/QR), raw ZPL, or compose ' +
@@ -97,7 +110,7 @@ export const OPENAPI_SPEC = {
           required: true,
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/PrinterProfileInput' },
+              schema: { $ref: '#/components/schemas/PrinterCreateRequest' },
               examples: {
                 adopt: {
                   summary: 'Adopt a discovered CUPS printer',
@@ -185,7 +198,7 @@ export const OPENAPI_SPEC = {
           required: true,
           content: {
             'application/json': {
-              schema: { $ref: '#/components/schemas/PrinterProfileInput' },
+              schema: { $ref: '#/components/schemas/PrinterUpdateRequest' },
               examples: {
                 labelStock: {
                   summary: 'Load different label stock on this printer',
@@ -246,33 +259,7 @@ export const OPENAPI_SPEC = {
           required: true,
           content: {
             'application/json': {
-              schema: {
-                type: 'object',
-                required: ['lines'],
-                properties: {
-                  lines: {
-                    type: 'array',
-                    items: { type: 'string' },
-                    minItems: 1,
-                    maxItems: 20,
-                    description: 'Lines of text to print',
-                    example: ['Living Room', 'Box #3']
-                  },
-                  copies: {
-                    type: 'integer',
-                    minimum: 1,
-                    maximum: MAX_COPIES,
-                    default: 1
-                  },
-                  target: { $ref: '#/components/schemas/PrintTarget' },
-                  printerId: { $ref: '#/components/schemas/PrinterId' },
-                  printerName: {
-                    type: 'string',
-                    description: 'Name to record on the job. Only needed for a printer this server cannot name itself — i.e. a browser-attached one.'
-                  },
-                  labelSize: { $ref: '#/components/schemas/LabelGeometry' }
-                }
-              },
+              schema: { $ref: '#/components/schemas/TextLabelRequest' },
               examples: {
                 simple: {
                   summary: 'Simple label',
@@ -306,40 +293,7 @@ export const OPENAPI_SPEC = {
           required: true,
           content: {
             'application/json': {
-              schema: {
-                type: 'object',
-                required: ['data'],
-                properties: {
-                  data: {
-                    type: 'string',
-                    description: 'Barcode data to encode',
-                    example: 'INV-42069'
-                  },
-                  type: {
-                    type: 'string',
-                    enum: ['CODE128', 'CODE39', 'CODE93', 'EAN8', 'EAN13',
-                      'UPCA', 'UPCE', 'CODABAR', 'PDF417', 'QRCODE', 'DATAMATRIX'],
-                    default: 'CODE128'
-                  },
-                  text: {
-                    type: 'string',
-                    description: 'Optional human-readable text below the barcode'
-                  },
-                  height: {
-                    type: 'integer',
-                    minimum: 10,
-                    maximum: 1000,
-                    description: 'Barcode height in dots'
-                  },
-                  target: { $ref: '#/components/schemas/PrintTarget' },
-                  printerId: { $ref: '#/components/schemas/PrinterId' },
-                  printerName: {
-                    type: 'string',
-                    description: 'Name to record on the job. Only needed for a printer this server cannot name itself — i.e. a browser-attached one.'
-                  },
-                  labelSize: { $ref: '#/components/schemas/LabelGeometry' }
-                }
-              },
+              schema: { $ref: '#/components/schemas/BarcodeLabelRequest' },
               examples: {
                 code128: {
                   summary: 'CODE128 barcode',
@@ -365,35 +319,7 @@ export const OPENAPI_SPEC = {
           required: true,
           content: {
             'application/json': {
-              schema: {
-                type: 'object',
-                required: ['data'],
-                properties: {
-                  data: {
-                    type: 'string',
-                    description: 'Data to encode in the QR code',
-                    example: 'https://example.com'
-                  },
-                  text: {
-                    type: 'string',
-                    description: 'Optional label text below the QR code'
-                  },
-                  magnification: {
-                    type: 'integer',
-                    minimum: 1,
-                    maximum: 10,
-                    default: 5,
-                    description: 'QR code size multiplier'
-                  },
-                  target: { $ref: '#/components/schemas/PrintTarget' },
-                  printerId: { $ref: '#/components/schemas/PrinterId' },
-                  printerName: {
-                    type: 'string',
-                    description: 'Name to record on the job. Only needed for a printer this server cannot name itself — i.e. a browser-attached one.'
-                  },
-                  labelSize: { $ref: '#/components/schemas/LabelGeometry' }
-                }
-              }
+              schema: { $ref: '#/components/schemas/QRLabelRequest' }
             }
           }
         },
@@ -415,24 +341,15 @@ export const OPENAPI_SPEC = {
         requestBody: {
           required: true,
           content: {
+            // Raw ZPL, passed through verbatim. Any body that doesn't start with
+            // `{` or `[` takes this path regardless of the declared content type.
             'text/plain': {
-              schema: { type: 'string', example: '^XA\n^FO50,50^A0N,40,40^FDHello^FS\n^XZ' }
+              schema: { type: 'string', minLength: 1, example: '^XA^FO20,20^A0N,30,30^FDHello^FS^XZ' }
             },
+            // The union also accepts a bare JSON string, which is why this isn't
+            // just the object form.
             'application/json': {
-              schema: {
-                type: 'object',
-                required: ['zpl'],
-                properties: {
-                  zpl: { type: 'string' },
-                  target: { $ref: '#/components/schemas/PrintTarget' },
-                  printerId: { $ref: '#/components/schemas/PrinterId' },
-                  printerName: {
-                    type: 'string',
-                    description: 'Name to record on the job. Only needed for a printer this server cannot name itself — i.e. a browser-attached one.'
-                  },
-                  labelSize: { $ref: '#/components/schemas/LabelGeometry' }
-                }
-              }
+              schema: { $ref: '#/components/schemas/ZplRequest' }
             }
           }
         },
@@ -455,25 +372,7 @@ export const OPENAPI_SPEC = {
           required: true,
           content: {
             'application/json': {
-              schema: {
-                type: 'object',
-                required: ['elements'],
-                properties: {
-                  elements: {
-                    type: 'array',
-                    minItems: 1,
-                    items: { $ref: '#/components/schemas/LabelElement' }
-                  },
-                  copies: { type: 'integer', minimum: 1, maximum: MAX_COPIES },
-                  target: { $ref: '#/components/schemas/PrintTarget' },
-                  printerId: { $ref: '#/components/schemas/PrinterId' },
-                  printerName: {
-                    type: 'string',
-                    description: 'Name to record on the job. Only needed for a printer this server cannot name itself — i.e. a browser-attached one.'
-                  },
-                  labelSize: { $ref: '#/components/schemas/LabelGeometry' }
-                }
-              },
+              schema: { $ref: '#/components/schemas/LabelRequest' },
               examples: {
                 simple: {
                   summary: 'Text + barcode',
@@ -508,20 +407,7 @@ export const OPENAPI_SPEC = {
           required: true,
           content: {
             'application/json': {
-              schema: {
-                type: 'object',
-                required: ['elements'],
-                properties: {
-                  elements: {
-                    type: 'array',
-                    minItems: 1,
-                    items: { $ref: '#/components/schemas/LabelElement' }
-                  },
-                  copies: { type: 'integer', minimum: 1, maximum: MAX_COPIES },
-                  widthDots: { type: 'integer', minimum: 1, description: 'Label width in dots (defaults to the configured label size)' },
-                  heightDots: { type: 'integer', minimum: 1, description: 'Label height in dots (defaults to the configured label size)' }
-                }
-              }
+              schema: { $ref: '#/components/schemas/RenderZplRequest' }
             }
           }
         },
@@ -652,6 +538,167 @@ export const OPENAPI_SPEC = {
         }
       }
     },
+    '/api/templates/{shortName}/schema': {
+      parameters: [
+        {
+          name: 'shortName',
+          in: 'path',
+          required: true,
+          schema: { type: 'string' },
+          example: 'part-2x1',
+          description: 'Template short name. Matched case-insensitively.'
+        }
+      ],
+      get: {
+        summary: 'Describe a template\'s variables',
+        operationId: 'getTemplatePrintSchema',
+        tags: ['Templates'],
+        description:
+          'What a template takes, for building a print request without opening the ' +
+          'designer. Deliberately not the full definition: exposing the layout would ' +
+          'invite callers to depend on it, which is the coupling short names exist to ' +
+          'avoid. `required` marks the variables the layout actually references — a ' +
+          'variable that is declared but never used in an element is optional.',
+        responses: {
+          '200': {
+            description: 'The template\'s print contract',
+            content: {
+              'application/json': {
+                schema: {
+                  type: 'object',
+                  properties: {
+                    template: { $ref: '#/components/schemas/TemplateRef' },
+                    description: { type: 'string', nullable: true },
+                    readOnly: { type: 'boolean', description: 'True for built-in presets' },
+                    labelSize: {
+                      type: 'object',
+                      description: 'The size the template was designed at, not necessarily the size it will print at.',
+                      properties: {
+                        widthDots: { type: 'integer' },
+                        heightDots: { type: 'integer' }
+                      }
+                    },
+                    variables: {
+                      type: 'array',
+                      items: {
+                        type: 'object',
+                        properties: {
+                          name: { type: 'string', example: 'partNumber' },
+                          label: { type: 'string', example: 'Part number' },
+                          sample: {
+                            type: 'string',
+                            description: 'Example value from the designer. Never substituted on a real print.'
+                          },
+                          required: { type: 'boolean' }
+                        }
+                      }
+                    },
+                    endpoint: {
+                      type: 'object',
+                      properties: {
+                        method: { const: 'POST' },
+                        path: { type: 'string', example: '/api/print/template/part-2x1' }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          '404': { $ref: '#/components/responses/TemplateNotFound' }
+        }
+      }
+    },
+    '/api/print/template/{shortName}': {
+      parameters: [
+        {
+          name: 'shortName',
+          in: 'path',
+          required: true,
+          schema: { type: 'string' },
+          example: 'part-2x1',
+          description: 'Template short name. Matched case-insensitively.'
+        }
+      ],
+      post: {
+        summary: 'Print a template by short name (webhook)',
+        operationId: 'printTemplate',
+        tags: ['Printing'],
+        description:
+          'Print a saved template from a JSON payload of its variables. Designed to be ' +
+          'called by other services and from browser JavaScript: the caller needs only ' +
+          'a short name and the variable names, so a template can be redesigned without ' +
+          'breaking any integration pointed at it.\n\n' +
+          '**Variables** may be sent nested under `variables` (canonical) or flat at the ' +
+          'top level, where any key that is not a control field is read as a variable. ' +
+          'Unknown variable names are rejected rather than ignored, so a typo is an ' +
+          'error rather than a blank field on a physical label. Variables the layout ' +
+          'references must all be supplied unless `allowMissingVariables` is set; a ' +
+          'variable\'s sample value is never substituted on a real print.\n\n' +
+          '**Label size** comes from the target printer\'s saved configuration, not the ' +
+          'template\'s design size, and the layout is scaled to fit. When they differ and ' +
+          'the template has no override for the target size, a `LABEL_SIZE_MISMATCH` ' +
+          'warning is returned alongside the success.\n\n' +
+          '**CORS** is open by default; set `ZEBRA_CORS_ORIGINS` to restrict it. This ' +
+          'endpoint is rate limited per client address — see `ZEBRA_PRINT_RATE_LIMIT`. ' +
+          'On an install with no `ZEBRA_API_KEY` it is unauthenticated, which means any ' +
+          'page the operator visits can consume label stock; set an API key on anything ' +
+          'reachable from a network you do not control.',
+        requestBody: {
+          required: false,
+          content: {
+            'application/json': {
+              schema: { $ref: '#/components/schemas/TemplatePrintRequest' },
+              examples: {
+                nested: {
+                  summary: 'Canonical: variables nested, three copies',
+                  value: {
+                    variables: { partNumber: '135853-002', partName: 'Lens Mount', rev: 'C', vendor: 'NRG', ticket: 'PI-1042', serial: 'NRG-001' },
+                    quantity: 3
+                  }
+                },
+                flat: {
+                  summary: 'Flat: for services with a fixed payload shape',
+                  value: {
+                    partNumber: '135853-002', partName: 'Lens Mount', rev: 'C',
+                    vendor: 'NRG', ticket: 'PI-1042', serial: 'NRG-001', quantity: 3
+                  }
+                },
+                targeted: {
+                  summary: 'Named printer',
+                  value: { variables: { assetId: 'NRG-001' }, printerId: 'prt_a1b2c3' }
+                },
+                dryRun: {
+                  summary: 'Render only — nothing prints, no job recorded',
+                  value: { variables: { partNumber: '135853-002' }, allowMissingVariables: true, dryRun: true }
+                }
+              }
+            }
+          }
+        },
+        responses: {
+          '200': {
+            description: 'Printed, queued, or (for dryRun) rendered',
+            content: {
+              'application/json': {
+                schema: {
+                  oneOf: [
+                    { $ref: '#/components/schemas/TemplatePrintResult' },
+                    { $ref: '#/components/schemas/TemplateDryRunResult' }
+                  ]
+                }
+              }
+            }
+          },
+          '400': { $ref: '#/components/responses/TemplatePrintBadRequest' },
+          '401': { $ref: '#/components/responses/Unauthorized' },
+          '404': { $ref: '#/components/responses/TemplateNotFound' },
+          '429': { $ref: '#/components/responses/RateLimited' },
+          '500': { $ref: '#/components/responses/PrintFailed' },
+          '503': { $ref: '#/components/responses/PrinterUnavailable' }
+        }
+      }
+    },
     '/api/print/serial': {
       post: {
         summary: 'Print serialized labels',
@@ -665,23 +712,7 @@ export const OPENAPI_SPEC = {
           required: true,
           content: {
             'application/json': {
-              schema: {
-                type: 'object',
-                required: ['lines', 'copies'],
-                properties: {
-                  lines: {
-                    type: 'array',
-                    items: { type: 'string' },
-                    minItems: 1,
-                    maxItems: 20,
-                    example: ['Widget', 'SN: {serial}']
-                  },
-                  copies: { type: 'integer', minimum: 1, maximum: MAX_COPIES },
-                  serialStart: { type: 'integer', minimum: 0, default: 1 },
-                  printerId: { $ref: '#/components/schemas/PrinterId' },
-                  serialFormat: { type: 'string', enum: ['#', '##', '###', '####', '#####'], default: '###' }
-                }
-              }
+              schema: { $ref: '#/components/schemas/SerialLabelRequest' }
             }
           }
         },
@@ -777,13 +808,7 @@ export const OPENAPI_SPEC = {
           required: false,
           content: {
             'application/json': {
-              schema: {
-                type: 'object',
-                properties: {
-                  status: { type: 'string', enum: ['completed', 'failed', 'cancelled', 'all'], default: 'completed' },
-                  olderThanDays: { type: 'integer', minimum: 1, maximum: 365 }
-                }
-              }
+              schema: { $ref: '#/components/schemas/ClearJobsRequest' }
             }
           }
         },
@@ -811,13 +836,7 @@ export const OPENAPI_SPEC = {
           required: false,
           content: {
             'application/json': {
-              schema: {
-                type: 'object',
-                properties: {
-                  status: { type: 'string', enum: ['completed', 'failed', 'cancelled', 'all'], default: 'completed' },
-                  olderThanDays: { type: 'integer', minimum: 1, maximum: 365 }
-                }
-              }
+              schema: { $ref: '#/components/schemas/ClearJobsRequest' }
             }
           }
         },
@@ -916,14 +935,7 @@ export const OPENAPI_SPEC = {
           required: true,
           content: {
             'application/json': {
-              schema: {
-                type: 'object',
-                required: ['success'],
-                properties: {
-                  success: { type: 'boolean' },
-                  error: { type: 'string', maxLength: 500, description: 'Failure detail, recorded on the job' }
-                }
-              },
+              schema: { $ref: '#/components/schemas/JobResultRequest' },
               examples: {
                 ok: { summary: 'Transfer succeeded', value: { success: true } },
                 failed: { summary: 'Transfer failed', value: { success: false, error: 'USB transfer failed (stall)' } }
@@ -971,25 +983,7 @@ export const OPENAPI_SPEC = {
           required: false,
           content: {
             'application/json': {
-              schema: {
-                type: 'object',
-                properties: {
-                  printerId: { $ref: '#/components/schemas/PrinterId' },
-                  widthDots: { type: 'integer', minimum: 100, maximum: 2400 },
-                  heightDots: { type: 'integer', minimum: 50, maximum: 7967 },
-                  dpi: { type: 'integer', enum: [203, 300, 600], default: 203 },
-                  tracking: { $ref: '#/components/schemas/MediaTracking' },
-                  markOffset: {
-                    type: 'integer',
-                    minimum: -240,
-                    maximum: 566,
-                    description: 'Black mark offset in dots. Only used when tracking is "mark".'
-                  },
-                  persist: { type: 'boolean', default: true, description: 'Save to the printer\'s non-volatile memory (^JUS)' },
-                  calibrate: { type: 'boolean', default: false, description: 'Run a sensor calibration (~JC) straight after applying. Feeds 2-4 labels.' },
-                  target: { $ref: '#/components/schemas/PrintTarget' }
-                }
-              },
+              schema: { $ref: '#/components/schemas/PrinterConfigRequest' },
               examples: {
                 current: { summary: 'Apply the configured label size', value: {} },
                 dieCut: {
@@ -1048,13 +1042,7 @@ export const OPENAPI_SPEC = {
           required: false,
           content: {
             'application/json': {
-              schema: {
-                type: 'object',
-                properties: {
-                  printerId: { $ref: '#/components/schemas/PrinterId' },
-                  target: { $ref: '#/components/schemas/PrintTarget' }
-                }
-              }
+              schema: { $ref: '#/components/schemas/PrinterCalibrateRequest' }
             }
           }
         },
@@ -1107,7 +1095,7 @@ export const OPENAPI_SPEC = {
           required: true,
           content: {
             'application/json': {
-              schema: { type: 'object', additionalProperties: true },
+              schema: { $ref: '#/components/schemas/SettingsRequest' },
               examples: {
                 toggle: { summary: 'Persist a preference', value: { serialize_labels: 'true' } }
               }
@@ -1160,17 +1148,7 @@ export const OPENAPI_SPEC = {
           required: true,
           content: {
             'application/json': {
-              schema: {
-                type: 'object',
-                required: ['widthDots', 'heightDots'],
-                properties: {
-                  widthDots: { type: 'integer', minimum: 100 },
-                  heightDots: { type: 'integer', minimum: 50 },
-                  name: { type: 'string' },
-                  applyToPrinter: { type: 'boolean', default: true, description: 'Push the geometry to the connected printer' },
-                  tracking: { $ref: '#/components/schemas/MediaTracking' }
-                }
-              },
+              schema: { $ref: '#/components/schemas/LabelSizeRequest' },
               examples: {
                 standard: { summary: '2x1" labels', value: { widthDots: 406, heightDots: 203, name: '2x1"' } },
                 settingOnly: {
@@ -1396,6 +1374,10 @@ export const OPENAPI_SPEC = {
   },
   components: {
     schemas: {
+      // Request bodies, generated from the Zod schemas that validate them. Listed
+      // first so a hand-written entry below with the same name is an obvious
+      // override rather than a silent shadow.
+      ...GENERATED_REQUEST_SCHEMAS,
       // ── Composed label elements (shared by /print/label and /render/zpl) ──
       LabelElementText: {
         type: 'object',
@@ -1488,126 +1470,104 @@ export const OPENAPI_SPEC = {
       },
 
       // ── Templates ──────────────────────────────────────────────────────
-      TemplateVariable: {
+      TemplateRef: {
         type: 'object',
-        description: 'A named input variable; referenced in content as {{name}}.',
-        required: ['name'],
+        description: 'Which template a print used. Echoed in the response and recorded on the job.',
         properties: {
-          name: { type: 'string', pattern: '^[A-Za-z0-9_]+$', example: 'partNumber' },
-          label: { type: 'string', description: 'Display label', example: 'Part Number' },
-          sample: { type: 'string', description: 'Mock value used for previews', example: '135853-002' }
+          id: { type: 'string', example: 'tpl_builtin_part_2x1' },
+          shortName: { type: 'string', nullable: true, example: 'part-2x1' },
+          name: { type: 'string', example: 'Part Label 2x1' }
         }
       },
-      TemplateElementBase: {
+      PrintWarning: {
         type: 'object',
-        description: 'Common fields. Positions/sizes are percentages of the label dimensions (0–100), so a design auto-scales to any size.',
-        required: ['id', 'xPct', 'yPct'],
+        description: 'A non-fatal observation about a print. Always present, empty when there is nothing to report.',
         properties: {
-          id: { type: 'string' },
-          name: { type: 'string' },
-          xPct: { type: 'number', minimum: -50, maximum: 150 },
-          yPct: { type: 'number', minimum: -50, maximum: 150 },
-          rotation: { type: 'string', enum: ['N', 'R', 'I', 'B'] },
-          hidden: { type: 'boolean' }
+          code: { type: 'string', example: 'LABEL_SIZE_MISMATCH' },
+          message: { type: 'string' }
         }
       },
-      TemplateElementText: {
-        allOf: [
-          { $ref: '#/components/schemas/TemplateElementBase' },
-          {
-            type: 'object',
-            required: ['type', 'content', 'fontHeightPct'],
-            properties: {
-              type: { const: 'text' },
-              content: { type: 'string', description: 'May contain {{variable}} tokens' },
-              fontHeightPct: { type: 'number', minimum: 0.5, maximum: 100, description: 'Font height as a percentage of label height' },
-              ratio: { type: 'number', minimum: 0.1, maximum: 3.0 },
-              font: { type: 'string' },
-              reverse: { type: 'boolean' },
-              align: { type: 'string', enum: ['left', 'center', 'right'] }
-            }
-          }
-        ]
-      },
-      TemplateElementBarcode: {
-        allOf: [
-          { $ref: '#/components/schemas/TemplateElementBase' },
-          {
-            type: 'object',
-            required: ['type', 'content', 'barcodeType', 'heightPct'],
-            properties: {
-              type: { const: 'barcode' },
-              content: { type: 'string' },
-              barcodeType: { $ref: '#/components/schemas/BarcodeType' },
-              heightPct: { type: 'number', minimum: 1, maximum: 100, description: 'Barcode height as a percentage of label height' },
-              narrowBarWidth: { type: 'integer', minimum: 1, maximum: 10 },
-              humanReadable: { type: 'boolean' }
-            }
-          }
-        ]
-      },
-      TemplateElementQr: {
-        allOf: [
-          { $ref: '#/components/schemas/TemplateElementBase' },
-          {
-            type: 'object',
-            required: ['type', 'content', 'magnification'],
-            properties: {
-              type: { const: 'qrcode' },
-              content: { type: 'string' },
-              magnification: { type: 'integer', minimum: 1, maximum: 10 },
-              errorCorrection: { type: 'string', enum: ['L', 'M', 'Q', 'H'] }
-            }
-          }
-        ]
-      },
-      TemplateElementBox: {
-        allOf: [
-          { $ref: '#/components/schemas/TemplateElementBase' },
-          {
-            type: 'object',
-            required: ['type', 'widthPct', 'heightPct', 'thickness'],
-            properties: {
-              type: { const: 'box' },
-              widthPct: { type: 'number', minimum: 0.1, maximum: 150 },
-              heightPct: { type: 'number', minimum: 0.1, maximum: 150 },
-              thickness: { type: 'integer', minimum: 1, maximum: 100, description: 'Border/line thickness in dots' },
-              rounding: { type: 'integer', minimum: 0, maximum: 8 },
-              fill: { type: 'boolean' }
-            }
-          }
-        ]
-      },
-      TemplateElement: {
-        oneOf: [
-          { $ref: '#/components/schemas/TemplateElementText' },
-          { $ref: '#/components/schemas/TemplateElementBarcode' },
-          { $ref: '#/components/schemas/TemplateElementQr' },
-          { $ref: '#/components/schemas/TemplateElementBox' }
-        ]
-      },
-      TemplateDefinition: {
+      TemplatePrintResult: {
         type: 'object',
-        required: ['name', 'baseWidthDots', 'baseHeightDots'],
+        description:
+          'Same shape as the other print endpoints, plus the template context. ' +
+          '`queued: true` is not a failure — the printer was unreachable and the job is ' +
+          'persisted for the background processor. Poll GET /api/jobs/{jobId} to find out ' +
+          'whether a label physically came out.',
         properties: {
-          name: { type: 'string', maxLength: 100 },
-          description: { type: 'string', maxLength: 500 },
-          baseWidthDots: { type: 'integer', minimum: 1, description: 'Reference design width in dots' },
-          baseHeightDots: { type: 'integer', minimum: 1, description: 'Reference design height in dots' },
-          variables: {
-            type: 'array',
-            items: { $ref: '#/components/schemas/TemplateVariable' }
-          },
-          elements: {
-            type: 'array',
-            items: { $ref: '#/components/schemas/TemplateElement' }
-          },
-          overrides: {
+          success: { const: true },
+          jobId: { type: 'string', example: 'job_1788561359824_u1fnd9' },
+          queued: { type: 'boolean' },
+          target: { type: 'string', enum: ['server', 'local'] },
+          printerId: { type: 'string', nullable: true },
+          labelSize: {
             type: 'object',
-            description: 'Per-size overrides: sizeKey ("{widthDots}x{heightDots}") → elementId → partial element fields.',
-            additionalProperties: {
+            properties: {
+              widthDots: { type: 'integer' },
+              heightDots: { type: 'integer' },
+              dpi: { type: 'integer' }
+            }
+          },
+          zpl: {
+            type: 'string',
+            description: 'Present only for a local (WebUSB) target. Send it to the printer, then report back via POST /api/jobs/{jobId}/result.'
+          },
+          quantity: { type: 'integer' },
+          template: { $ref: '#/components/schemas/TemplateRef' },
+          warnings: { type: 'array', items: { $ref: '#/components/schemas/PrintWarning' } }
+        }
+      },
+      TemplateDryRunResult: {
+        type: 'object',
+        description: 'Returned when `dryRun` is set. Nothing printed, no job recorded.',
+        properties: {
+          success: { const: true },
+          dryRun: { const: true },
+          zpl: { type: 'string' },
+          elements: { type: 'array', items: { $ref: '#/components/schemas/LabelElement' } },
+          labelSize: {
+            type: 'object',
+            properties: {
+              widthDots: { type: 'integer' },
+              heightDots: { type: 'integer' },
+              dpi: { type: 'integer' }
+            }
+          },
+          quantity: { type: 'integer' },
+          template: { $ref: '#/components/schemas/TemplateRef' },
+          warnings: { type: 'array', items: { $ref: '#/components/schemas/PrintWarning' } }
+        }
+      },
+      ApiError: {
+        type: 'object',
+        description:
+          'The failure envelope. `error` is a human-readable string and has always been ' +
+          'present; `code` was added for integrations to branch on and is the part that is ' +
+          'stable. `error` and `message` may be reworded in any release. Treat an ' +
+          'unrecognised `code` as a generic failure of its HTTP status class.',
+        required: ['error', 'code'],
+        properties: {
+          error: { type: 'string' },
+          code: {
+            type: 'string',
+            enum: [
+              'INVALID_JSON', 'VALIDATION_FAILED', 'UNKNOWN_VARIABLES', 'MISSING_VARIABLES',
+              'RENDER_FAILED', 'BAD_REQUEST', 'UNAUTHORIZED', 'PRESET_IMMUTABLE',
+              'TEMPLATE_NOT_FOUND', 'PRINTER_NOT_FOUND', 'NOT_FOUND', 'SHORT_NAME_TAKEN',
+              'RATE_LIMITED', 'PRINT_FAILED', 'INTERNAL_ERROR', 'NO_PRINTER', 'QUEUE_UNAVAILABLE'
+            ]
+          },
+          message: { type: 'string', description: 'Longer explanation, when there is more to say than `error`.' },
+          details: {
+            type: 'array',
+            description: 'Per-field problems. Present for validation failures.',
+            items: {
               type: 'object',
-              additionalProperties: { type: 'object', additionalProperties: true }
+              properties: {
+                field: { type: 'string', description: 'Dotted path, or "(root)" for the body itself.' },
+                message: { type: 'string' },
+                code: { type: 'string', description: 'Zod\'s own issue code, e.g. "too_big".' }
+              }
             }
           }
         }
@@ -1733,30 +1693,6 @@ export const OPENAPI_SPEC = {
       },
 
       // ── Printers ────────────────────────────────────────────────────────
-      PrinterId: {
-        type: 'string',
-        description:
-          'Which configured printer to use. Omit to use the default printer. ' +
-          'Ids prefixed `local_` belong to a browser-attached printer: the server ' +
-          'cannot print to those, so naming one always returns the ZPL for the caller ' +
-          'to transmit, whatever `target` says.',
-        example: 'prn_m9x2k1_a7b3c9'
-      },
-      LabelGeometry: {
-        type: 'object',
-        description:
-          "Label geometry to render for, overriding the printer's saved configuration. " +
-          'This is how a browser-attached printer supplies its geometry — its configuration ' +
-          'lives in that browser, so the server has nothing to look up. Inches are always ' +
-          'derived from dots and DPI server-side and are not accepted here.',
-        required: ['widthDots', 'heightDots'],
-        properties: {
-          widthDots: { type: 'integer', example: 406 },
-          heightDots: { type: 'integer', example: 203 },
-          dpi: { type: 'integer', enum: [203, 300, 600] },
-          name: { type: 'string', example: '2×1" (small)' }
-        }
-      },
       PrinterTransport: {
         type: 'string',
         enum: ['cups', 'usb', 'tcp'],
@@ -1824,25 +1760,6 @@ export const OPENAPI_SPEC = {
             }
           }
         ]
-      },
-      PrinterProfileInput: {
-        type: 'object',
-        properties: {
-          name: { type: 'string', example: 'Warehouse GK420d' },
-          transport: { $ref: '#/components/schemas/PrinterTransport' },
-          cupsName: {
-            type: ['string', 'null'],
-            description: 'CUPS queue name. Required when transport is `cups` (the default).',
-            example: 'ZTC-GK420d'
-          },
-          deviceUri: { type: ['string', 'null'] },
-          usbDeviceId: { type: ['string', 'null'] },
-          labelSize: { $ref: '#/components/schemas/LabelGeometry' },
-          dpi: { type: 'integer', enum: [203, 300, 600] },
-          tracking: { $ref: '#/components/schemas/MediaTracking' },
-          markOffset: { type: ['integer', 'null'], minimum: -240, maximum: 566 },
-          isDefault: { type: 'boolean' }
-        }
       },
       DiscoveredPrinter: {
         type: 'object',
@@ -1994,6 +1911,104 @@ export const OPENAPI_SPEC = {
               properties: {
                 error: { type: 'string', example: 'Template not found' }
               }
+            }
+          }
+        }
+      },
+      TemplateNotFound: {
+        description: 'No template with that short name',
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/ApiError' },
+            example: {
+              error: 'Template not found',
+              code: 'TEMPLATE_NOT_FOUND',
+              message: 'No template has the short name \'part-2x2\'. Short names are set in the template designer; GET /api/templates lists them.',
+              shortName: 'part-2x2'
+            }
+          }
+        }
+      },
+      TemplatePrintBadRequest: {
+        description: 'The body failed validation, or the variables do not match the template',
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/ApiError' },
+            examples: {
+              unknownVariables: {
+                summary: 'A variable the template does not declare — often a typo',
+                value: {
+                  error: 'Unknown variable: partNumbr',
+                  code: 'UNKNOWN_VARIABLES',
+                  message: 'This template accepts: partName, partNumber, rev, vendor, ticket, serial.',
+                  details: [{ field: 'variables.partNumbr', message: 'Not a variable of this template' }],
+                  accepts: ['partName', 'partNumber', 'rev', 'vendor', 'ticket', 'serial'],
+                  unknown: ['partNumbr']
+                }
+              },
+              missingVariables: {
+                summary: 'A variable the layout references was not supplied',
+                value: {
+                  error: 'Missing required variables: rev, vendor',
+                  code: 'MISSING_VARIABLES',
+                  message: 'Every variable the template\'s layout references needs a value. Send `allowMissingVariables: true` to print them blank instead.',
+                  missing: ['rev', 'vendor']
+                }
+              },
+              validationFailed: {
+                summary: 'The body itself is wrong',
+                value: {
+                  error: 'Validation failed',
+                  code: 'VALIDATION_FAILED',
+                  message: 'quantity: Too many copies — the maximum is 500 per request',
+                  details: [{ field: 'quantity', message: 'Too many copies — the maximum is 500 per request', code: 'too_big' }]
+                }
+              }
+            }
+          }
+        }
+      },
+      Unauthorized: {
+        description: 'An API key is configured and was not supplied, or is wrong',
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/ApiError' },
+            example: {
+              error: 'Unauthorized — provide a valid API key via Bearer auth or ?key= query param',
+              code: 'UNAUTHORIZED'
+            }
+          }
+        }
+      },
+      RateLimited: {
+        description: 'Too many print requests from this client. See the Retry-After header.',
+        headers: {
+          'Retry-After': { schema: { type: 'integer' }, description: 'Seconds until the window resets' },
+          'X-RateLimit-Limit': { schema: { type: 'integer' } },
+          'X-RateLimit-Remaining': { schema: { type: 'integer' } }
+        },
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/ApiError' },
+            example: {
+              error: 'Too many print requests',
+              code: 'RATE_LIMITED',
+              message: 'This endpoint accepts 120 requests per minute. Retry in 34s.',
+              retryAfterSeconds: 34
+            }
+          }
+        }
+      },
+      PrintFailed: {
+        description: 'The printer accepted the job and reported a failure. Check the job before retrying — a label may have come out.',
+        content: {
+          'application/json': {
+            schema: { $ref: '#/components/schemas/ApiError' },
+            example: {
+              error: 'lp: unable to print file',
+              code: 'PRINT_FAILED',
+              success: false,
+              jobId: 'job_1788561359824_u1fnd9'
             }
           }
         }

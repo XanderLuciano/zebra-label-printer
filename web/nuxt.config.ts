@@ -22,4 +22,18 @@ export default defineNuxtConfig({
   ssr: false,
 
   compatibilityDate: '2025-01-15',
+
+  // The template engine and ZPL font metrics live in the backend package
+  // (../src), so the designer canvas and server-side template rendering share one
+  // implementation instead of drifting apart. Vite's dev server refuses to serve
+  // files above its root unless told otherwise, so the composables that
+  // re-export them would 404 under `npm run dev` without this. Production
+  // builds bundle the files and don't need it.
+  vite: {
+    server: {
+      fs: {
+        allow: ['..'],
+      },
+    },
+  },
 });

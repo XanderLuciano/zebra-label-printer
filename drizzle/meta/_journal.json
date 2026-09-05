@@ -36,6 +36,13 @@
       "when": 1787947637250,
       "tag": "0004_fix_timestamp_defaults",
       "breakpoints": true
+    },
+    {
+      "idx": 5,
+      "version": "6",
+      "when": 1788560517084,
+      "tag": "0005_template_short_name",
+      "breakpoints": true
     }
   ]
 }

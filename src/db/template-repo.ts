@@ -16,7 +16,8 @@ import type { TemplateDefinition } from '../schemas'
 import {
   PRESET_ID_PREFIX,
   listPresetTemplates,
-  presetTemplate
+  presetTemplate,
+  presetTemplateByShortName
 } from './template-presets'
 import type { PresetTemplate } from './template-presets'
 
@@ -35,6 +36,9 @@ export interface StoredTemplate extends TemplateDefinition {
   readOnly: boolean;
 }
 
+/** Either kind of template, as every lookup here returns. */
+export type AnyTemplate = StoredTemplate | PresetTemplate
+
 function parseRow(row: typeof labelTemplates.$inferSelect): StoredTemplate {
   const def = JSON.parse(row.data) as TemplateDefinition
   return {
@@ -42,6 +46,9 @@ function parseRow(row: typeof labelTemplates.$inferSelect): StoredTemplate {
     id: row.id,
     name: row.name,
     description: row.description ?? def.description,
+    // The column wins over the blob. Both are written together, but the column is
+    // the one the unique index enforces, so it is the authoritative copy.
+    shortName: row.shortName ?? undefined,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
     readOnly: false
@@ -70,6 +77,7 @@ export function createTemplate(def: TemplateDefinition): StoredTemplate {
     id,
     name: def.name,
     description: def.description ?? null,
+    shortName: normalizeShortName(def.shortName),
     data: JSON.stringify(def)
   }).run()
   return getTemplate(id)!
@@ -85,12 +93,67 @@ export function updateTemplate(id: string, def: TemplateDefinition): StoredTempl
     .set({
       name: def.name,
       description: def.description ?? null,
+      shortName: normalizeShortName(def.shortName),
       data: JSON.stringify(def),
       updatedAt: new Date().toISOString().replace('T', ' ').slice(0, 19)
     })
     .where(eq(labelTemplates.id, id))
     .run()
   return getTemplate(id)
+}
+
+// ─── Short names (webhook slugs) ─────────────────────────────────────────────
+
+/**
+ * Repeats what the Zod schema already does, because the repo is also reachable
+ * from the CLI and library callers. A slug stored with capitals would slip past
+ * the unique index and then be permanently unreachable, since lookup lowercases.
+ */
+function normalizeShortName(shortName: string | null | undefined): string | null {
+  const trimmed = shortName?.trim().toLowerCase()
+  return trimmed ? trimmed : null
+}
+
+/** Presets excluded — use `findTemplateByShortName` to cover both. */
+export function getTemplateByShortName(shortName: string): StoredTemplate | null {
+  const wanted = normalizeShortName(shortName)
+  if (!wanted) return null
+  const db = getDb()
+  const row = db.select().from(labelTemplates).where(eq(labelTemplates.shortName, wanted)).get()
+  return row ? parseRow(row) : null
+}
+
+/**
+ * Resolve any short name, user-owned or preset. What the webhook uses.
+ *
+ * A user's own template wins a same-slug collision. `shortNameConflict()` refuses
+ * that at write time, so reaching it means something skipped the check — and their
+ * template is the more useful thing to serve.
+ */
+export function findTemplateByShortName(shortName: string): StoredTemplate | PresetTemplate | null {
+  return getTemplateByShortName(shortName) ?? presetTemplateByShortName(shortName)
+}
+
+/**
+ * The owning template's id, or null when the slug is free. `excludeId` skips one
+ * template, so a template keeping its slug through an update doesn't collide with
+ * itself.
+ *
+ * Needed *as well as* the unique index: presets are built from code and never
+ * stored, so SQLite cannot see them and the index alone would let a user shadow
+ * `part-2x1`. The index still closes the concurrent-create race.
+ */
+export function shortNameConflict(shortName: string, excludeId?: string): string | null {
+  const wanted = normalizeShortName(shortName)
+  if (!wanted) return null
+
+  const owner = getTemplateByShortName(wanted)
+  if (owner && owner.id !== excludeId) return owner.id
+
+  const preset = presetTemplateByShortName(wanted)
+  if (preset && preset.id !== excludeId) return preset.id
+
+  return null
 }
 
 /** Delete a template. Returns true if a row was removed. */
@@ -162,10 +225,19 @@ function stableStringify(value: unknown): string {
  * Both sides go through the schema so optional fields that default on write
  * (a variable's empty `label`, say) don't make an untouched row look edited.
  * Returns null when the definition doesn't parse, which is treated as "differs".
+ *
+ * `shortName` is excluded. It is serving metadata added after these rows were
+ * seeded, so the presets carry one and any leftover row cannot — comparing it
+ * would make every seeded row look edited and get it "preserved" as a customised
+ * copy the user never made. The question this comparison exists to answer is
+ * whether the *design* still matches the preset it came from.
  */
 function comparableDefinition(def: TemplateDefinition): string | null {
   const parsed = templateSchema.safeParse(def)
-  return parsed.success ? stableStringify(parsed.data) : null
+  if (!parsed.success) return null
+  const design: Record<string, unknown> = { ...parsed.data }
+  delete design.shortName
+  return stableStringify(design)
 }
 
 /**
@@ -204,11 +276,21 @@ export function migrateSeededPresetRows(): { removed: string[]; preserved: strin
     // if they already renamed it, that name is the informative one.
     const def = definitionOf(row)
     const name = preset && def.name === preset.name ? `${def.name} (customised)` : def.name
-    // One transaction, so a crash can't land between the copy appearing and the
-    // old row going — which would fork a duplicate copy on the next startup.
+    // The copy does not inherit the preset's short name. That slug is a public
+    // webhook URL which the preset still answers on, so keeping it here would put
+    // two templates behind one address — and the unique index would refuse the
+    // insert outright. Assigning a slug to the copy is the author's call.
+    const shortName = preset && def.shortName === preset.shortName ? undefined : def.shortName
+    // One transaction, so a crash can't land between the old row going and the copy
+    // appearing — which would lose the user's work, or fork a duplicate on the next
+    // startup depending on the order.
+    //
+    // The old row is dropped *first* because both rows would otherwise hold the same
+    // short name at once, and the unique index refuses that. Order is immaterial to
+    // atomicity: the whole transaction commits or none of it does.
     getDb().transaction(() => {
-      createTemplate({ ...def, name })
       deleteTemplate(row.id)
+      createTemplate({ ...def, name, shortName })
     })
     preserved.push(row.id)
   }

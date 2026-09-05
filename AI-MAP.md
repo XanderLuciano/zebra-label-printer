@@ -38,9 +38,12 @@ src/
   printer.ts            → Printer class: connect, auto-discover, print ZPL via CUPS
   discovery.ts          → CUPS-based printer discovery with Zebra detection
   zpl.ts                → ZPLBuilder fluent API + convenience functions + unit helpers
+  zpl-fonts.ts          → Measured ^A font metrics (advance widths, cap heights, magnification)
+  template-engine.ts    → Template model, resolveTemplate(), substitute(), rotation geometry
   label.ts              → High-level label templates (shipping, asset, item, QR)
   schemas.ts            → Zod validation schemas for all API endpoints
-  openapi.ts            → OpenAPI 3.1 spec object + Swagger UI HTML generator
+  openapi.ts            → OpenAPI 3.1 spec: paths, prose, responses + Swagger UI HTML
+  openapi-zod.ts        → Generates the spec's request schemas from the Zod schemas
   db/                   → SQLite persistence layer
     database.ts         → getDb() singleton, WAL mode, auto-migrations
     print-job-repo.ts   → CRUD for print_jobs and job_logs tables
@@ -53,8 +56,10 @@ src/
   queue.ts              → PrintQueue: persistent job queue with background processor
   webhook.ts            → Thin re-export + standalone entry point
   server/               → Modular HTTP server (split from webhook.ts)
-    index.ts            → WebhookServer class + startServer() + entry point
+    index.ts            → WebhookServer class + startServer() + entry point + CORS
     helpers.ts          → json(), html(), readBody(), parseJson(), validate(), checkAuth()
+    errors.ts           → ApiErrorCode taxonomy + sendError(): the error envelope
+    rate-limit.ts       → RateLimiter for the print webhooks (fixed window, per address)
     router.ts           → Route table types, findHandler(), sendNotFound(), printRoutes()
     handlers/
       get-routes.ts     → GET handlers: health, discovery, OpenAPI spec, Swagger UI, label size
@@ -62,6 +67,7 @@ src/
       printer-registry-routes.ts → Printer CRUD: configure printers and their label stock
       printer-routes.ts → POST handlers: media configuration (^PW/^ML/^MN) + calibration (~JC)
       template-routes.ts→ Template CRUD + /api/render/zpl (build ZPL without printing)
+      template-print-routes.ts → Print a template by short name (webhooks) + variable discovery
 dist/                   → Compiled output (gitignored, shipped in npm package)
 web/                    → Nuxt 4 Web UI (separate package)
   nuxt.config.ts        → Nuxt config (modules: @nuxt/ui, @nuxt/eslint)
@@ -84,8 +90,8 @@ web/                    → Nuxt 4 Web UI (separate package)
       PrinterManager.vue→ Pick a printer, then configure that printer's label stock and media
     composables/
       useApi.ts         → API client wrapping $fetch with typed methods
-      useTemplateEngine.ts → Template model, resolveTemplate(), ZPL rotation geometry
-      useZplFonts.ts       → Measured ZPL font metrics (advance widths, cap heights, magnification)
+      useTemplateEngine.ts → Re-exports ../../../src/template-engine (shared with the server)
+      useZplFonts.ts       → Re-exports ../../../src/zpl-fonts (shared with the server)
       useLocalPrinter.ts   → WebUSB connections to directly attached printers, keyed by device
       usePrinters.ts       → The printer list: server printers + this browser's USB printers
       usePrintTarget.ts    → Print dispatch to the selected printer (+ config/calibrate)
@@ -307,6 +313,8 @@ on the wrong label stock.
 | POST | `/api/print/zpl` | `printZplHandler()` | `zplSchema` (union) |
 | POST | `/api/print/label` | `printLabelHandler()` | `labelSchema` |
 | POST | `/api/print/serial` | `printSerialHandler()` | `serialLabelSchema` |
+| POST | `/api/print/template/:shortName` | `templatePrintHandler()` | `templatePrintSchema` |
+| GET | `/api/templates/:shortName/schema` | `templateSchemaHandler()` | — |
 | POST | `/api/render/zpl` | `renderZplHandler()` | `renderZplSchema` |
 
 ### Choosing a printer on a print request
@@ -366,11 +374,42 @@ must drop the `job_logs` foreign key first and restore it afterwards.**
 
 ## Adding a New Endpoint
 
-1. Add a Zod schema in `src/schemas.ts` (if accepting a request body)
-2. Create a handler function (or factory) in the appropriate `src/server/handlers/*.ts`
-3. Register the handler in `src/server/index.ts` → `buildRoutes()`
-4. Add the route to `src/openapi.ts` → `OPENAPI_SPEC.paths`
-5. Export the schema type from `src/index.ts` if it's part of the public API
+1. Add a Zod schema in `src/schemas.ts` (if accepting a request body). Put field prose in
+   `.describe()` / `.meta({ description, examples })` — that is what the docs publish.
+2. Register it in `src/openapi-zod.ts` → `REQUEST_SCHEMAS` under its component name
+3. Create a handler function (or factory) in the appropriate `src/server/handlers/*.ts`
+4. Register the handler in `src/server/index.ts` → `buildRoutes()`, or `matchRoute()` if the
+   path has parameters. Parameterised routes also go in `PARAMETERISED_ROUTES` (`router.ts`)
+   so they appear in the startup banner and the 404 endpoint list.
+5. Add the path to `src/openapi.ts` → `OPENAPI_SPEC.paths`, with the request body as
+   `{ $ref: '#/components/schemas/<YourRequest>' }` — never an inline schema
+6. Export the schema type from `src/index.ts` if it's part of the public API
+
+`test/unit/openapi-drift.test.ts` fails if you skip step 2, 4, or 5.
+
+## The API documents itself
+
+`GET /api/docs` is generated from the code that enforces the rules, so it cannot describe
+something the server doesn't do:
+
+- **Request schemas are generated from Zod.** `src/openapi-zod.ts` runs every schema in
+  `REQUEST_SCHEMAS` through `z.toJSONSchema(..., { io: 'input' })` and spreads the result into
+  `components.schemas`. A limit like `MAX_COPIES` appears in the docs because it *is* the
+  constant, not a copy of it. `io: 'input'` matters: it describes what a caller sends, before
+  defaults apply and transforms run.
+- **Field prose lives in `.describe()`** on the schema, so there is one source for it.
+- **Paths, endpoint prose, examples and response schemas are still hand-written.** Nothing
+  validates a response, so Zod has no definition to generate from.
+- **What remains duplicated is tested.** `openapi-drift.test.ts` asserts every `requestBody` is
+  a `$ref` to a generated component, that no hand-written schema shadows a generated one, that
+  the error-code enum matches `API_ERROR_CODES`, that every `PARAMETERISED_ROUTES` entry is
+  documented, and that no component is left unreferenced.
+
+Report failures with `sendError()` from `src/server/errors.ts`, not `json(res, { error }, status)`.
+It owns the status code for each `ApiErrorCode`, so one code can't be sent with two different
+statuses from two handlers — which is how a caller ends up unable to trust either field. The body
+keeps `error` as a plain human-readable string for backwards compatibility and adds `code`,
+`message`, and `details[]`.
 
 ## Printer Notes
 
@@ -407,9 +446,37 @@ which is what you want after swapping stock or moving the printer to another mac
 - `~JC` (`calibrationZpl()`) runs a sensor calibration and feeds 2–4 labels. Always
   send the media config first so calibration knows the media type and search window.
 
+### Printing a template by short name (webhooks)
+
+`POST /api/print/template/{shortName}` prints a saved template from a JSON payload of its
+variables. **Decisions and rationale live in `.ai/template-print-api.md` — read it before
+changing any of this.** What you need to know to navigate the code:
+
+- Short names are a separate identifier from `id`, in `label_templates.short_name` with a
+  unique index. They are **public API**: external services hardcode them, so renaming a
+  preset's slug is a breaking change.
+- Uniqueness is enforced twice on purpose — the index for the concurrent-create race,
+  `shortNameConflict()` for the code-defined presets SQLite cannot see.
+- The handler resolves the template and then calls the same `dispatchPrint()` every other print
+  endpoint uses. Printer selection, the local/WebUSB handoff, label-size snapshots and queueing
+  are not reimplemented. Jobs are recorded as `jobType: 'label'` with resolved `elements`,
+  because that is what `PrintQueue.rebuildZpl()` can reconstruct.
+- The endpoint is CORS-open and, with no `ZEBRA_API_KEY`, unauthenticated. `ZEBRA_CORS_ORIGINS`
+  and `ZEBRA_PRINT_RATE_LIMIT` bound the damage; neither replaces an API key.
+
+### The template engine lives in `src/`, and the web app re-exports it
+
+`src/template-engine.ts` and `src/zpl-fonts.ts` were Nuxt composables until the server needed
+to render templates too. One copy, in `src/`, so the designer preview and a webhook print cannot
+disagree; `web/app/composables/useTemplateEngine.ts` / `useZplFonts.ts` are re-export shims.
+
+Both are compiled twice — CommonJS by `tsc`, ESM by Vite — so keep them free of Node built-ins,
+browser globals, and anything needing a bundler. `web/nuxt.config.ts` sets
+`vite.server.fs.allow` because Vite's dev server otherwise refuses to serve files above its root.
+
 ### Fonts and text metrics
 
-`web/app/composables/useZplFonts.ts` holds measured metrics for the built-in `^A`
+`src/zpl-fonts.ts` holds measured metrics for the built-in `^A`
 fonts, so the designer canvas sizes and spaces text the way the printer does.
 Font `0` is CG Triumvirate Bold Condensed and *proportional* — `iiii` and `WWWW`
 are not the same width — while `A`–`H` are fixed-width bitmaps that only render at
@@ -419,6 +486,10 @@ character **cell**, not the ink, which is what makes rotation land correctly.
 The preview faces in `web/public/fonts` are metric-matched substitutes; the
 printer's own fonts are licensed firmware typefaces that can't be shipped. See
 that folder's README for the licences and why.
+
+The `ZPL_PREVIEW_FACES` mapping in `src/zpl-fonts.ts` is the only browser-facing part of that
+file, and it stays there rather than moving back into `web/` so the face metrics sit next to the
+printer metrics they are derived from.
 
 ### `^BY` and barcode module width
 
@@ -435,7 +506,7 @@ height, unlike the others.
 
 `^FO x,y` is the top-left corner of a field's **rotated** bounding box, and quarter
 turns (`R`, `B`) swap width and height. Verified by measuring Labelary renders; see
-the table in `web/app/composables/useTemplateEngine.ts`. `rotationTransform()` and
+the table in `src/template-engine.ts`. `rotationTransform()` and
 `rotatedBounds()` encode this so the designer canvas and history preview match the
 printed output. `^GB` has no rotation parameter, so box rotation is baked into its
 dimensions instead.
@@ -476,6 +547,7 @@ step and made an up-to-date install report that an update was available.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v0.6.0 | 2026-09-04 | **Template print webhooks**: `POST /api/print/template/{shortName}` prints a saved template from a JSON payload of its variables plus a quantity, with `GET /api/templates/{shortName}/schema` for variable discovery. Template short names as a public identifier (migration `0005`), unique across user templates *and* code-defined presets. Standardized error envelope adding a machine-readable `code` alongside the existing `error` string. Configurable CORS origins (`ZEBRA_CORS_ORIGINS`), preflight caching, and a per-address rate limit on the print webhooks (`ZEBRA_PRINT_RATE_LIMIT`). `/api/docs` request schemas are now **generated from the Zod schemas**, so a documented limit is the enforced one; `PUT /api/settings` and `PUT /api/label-size` gained the Zod validation they never had. The template engine and ZPL font metrics moved from `web/app/composables/` into `src/`, so the designer preview and a webhook print resolve templates through one implementation. **Fixes**: `POST /api/print/zpl` hung forever on a JSON body (it read the request stream twice); `rebuildZpl()` dropped `copies`, so a queued multi-copy job printed a single label; the OpenAPI spec version was hardcoded and had drifted from package.json |
 | v0.4.0 | 2026-08-28 | Per-printer configuration: `printers` table, `PrinterRegistry`, printer CRUD API, `printerId` on print requests, per-printer queueing, multi-device WebUSB, unified printer list in Settings. Hot-plug detection via `lpinfo` device enumeration, with a health monitor recording connect/disconnect transitions. Fixed timestamp defaults storing a string literal instead of a date (migration `0004`). CI now runs the whole test suite and covers the web app |
 | v0.3.0 | 2026-04-28 | Not recorded at the time — see `git log v0.2.0..v0.3.0` |
 | v0.2.0 | 2026-04-27 | Not recorded at the time — see `git log v0.1.0..v0.2.0` |

@@ -32,7 +32,14 @@ function readCurrentVersion(): string {
   }
 }
 
-const CURRENT_VERSION = readCurrentVersion()
+/**
+ * The version this build reports, everywhere.
+ *
+ * Exported so the OpenAPI spec can use it too. That spec used to carry its own
+ * hardcoded copy, which is the same trap described above and had already drifted:
+ * it said 0.5.0 while package.json moved on.
+ */
+export const CURRENT_VERSION = readCurrentVersion()
 
 export interface UpdateInfo {
   current: string

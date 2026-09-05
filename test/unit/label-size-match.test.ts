@@ -25,7 +25,7 @@ function printer(overrides: Partial<TestPrinter> & { id: string }): TestPrinter 
     connection: 'server',
     isDefault: false,
     labelSize: { ...SIZE_2X1 },
-    ...overrides,
+    ...overrides
   }
 }
 
@@ -53,7 +53,7 @@ describe('findPrinterForSize', () => {
   it('finds the printer configured with the wanted size', () => {
     const list = [
       printer({ id: 'a', labelSize: SIZE_2X1 }),
-      printer({ id: 'b', labelSize: SIZE_3X5 }),
+      printer({ id: 'b', labelSize: SIZE_3X5 })
     ]
     expect(findPrinterForSize(list, SIZE_3X5)?.id).toBe('b')
   })
@@ -79,7 +79,7 @@ describe('findPrinterForSize', () => {
   it('prefers the server default over other server printers', () => {
     const list = [
       printer({ id: 'other', labelSize: SIZE_3X5 }),
-      printer({ id: 'default', labelSize: SIZE_3X5, isDefault: true }),
+      printer({ id: 'default', labelSize: SIZE_3X5, isDefault: true })
     ]
     expect(findPrinterForSize(list, SIZE_3X5)?.id).toBe('default')
   })
@@ -89,7 +89,7 @@ describe('findPrinterForSize', () => {
     // configuration claims.
     const list = [
       printer({ id: 'usb', labelSize: SIZE_3X5, connection: 'local' }),
-      printer({ id: 'srv', labelSize: SIZE_3X5 }),
+      printer({ id: 'srv', labelSize: SIZE_3X5 })
     ]
     expect(findPrinterForSize(list, SIZE_3X5)?.id).toBe('srv')
   })
@@ -97,7 +97,7 @@ describe('findPrinterForSize', () => {
   it('falls back to a ready local printer when no server printer matches', () => {
     const list = [
       printer({ id: 'srv-wrong-size', labelSize: SIZE_2X1 }),
-      printer({ id: 'usb', labelSize: SIZE_3X5, connection: 'local' }),
+      printer({ id: 'usb', labelSize: SIZE_3X5, connection: 'local' })
     ]
     expect(findPrinterForSize(list, SIZE_3X5)?.id).toBe('usb')
   })

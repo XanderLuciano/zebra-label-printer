@@ -83,11 +83,26 @@ export const labelTemplates = sqliteTable('label_templates', {
   id: text('id').primaryKey(),
   name: text('name').notNull(),
   description: text('description'),
+  /**
+   * Public URL slug for `POST /api/print/template/{shortName}`.
+   *
+   * Separate from `id` on purpose: `id` is internal and random, `name` is
+   * free-form and expected to be reworded. This is the one external services
+   * hardcode, so it is constrained and treated as permanent once published.
+   *
+   * Nullable, and never auto-generated: a guessed slug would become a public name
+   * the author never chose.
+   */
+  shortName: text('short_name'),
   data: text('data').notNull(),                      // JSON: full template definition
   createdAt: text('created_at').notNull().default(sql`(datetime('now'))`),
   updatedAt: text('updated_at').notNull().default(sql`(datetime('now'))`)
 }, table => [
-  index('idx_label_templates_name').on(table.name)
+  index('idx_label_templates_name').on(table.name),
+  // SQLite treats NULLs as distinct, so any number of templates may have no short
+  // name. This index cannot see the code-defined presets, which also occupy the
+  // namespace — template-repo.ts checks those separately.
+  uniqueIndex('idx_label_templates_short_name').on(table.shortName)
 ])
 
 // ─── Printers ────────────────────────────────────────────────────────────────

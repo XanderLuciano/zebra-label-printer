@@ -12,7 +12,11 @@ import {
   MIN_LABEL_WIDTH_DOTS,
   MIN_LABEL_HEIGHT_DOTS,
   MAX_LABEL_LENGTH_DOTS,
-  SERVER_PRINTER_TRANSPORTS
+  SERVER_PRINTER_TRANSPORTS,
+  TEMPLATE_SHORT_NAME_PATTERN,
+  MIN_TEMPLATE_SHORT_NAME_LENGTH,
+  MAX_TEMPLATE_SHORT_NAME_LENGTH,
+  RESERVED_TEMPLATE_SHORT_NAMES
 } from './constants'
 
 /**
@@ -24,6 +28,7 @@ import {
 const copiesSchema = z.number().int()
   .min(1, 'At least 1 copy required')
   .max(MAX_COPIES, `Too many copies — the maximum is ${MAX_COPIES} per request`)
+  .describe(`How many labels to print (1–${MAX_COPIES}). Emitted as a single ^PQ, so the printer repeats the label from its own buffer.`)
 
 /** Widest supported print head (4" at 600 DPI) */
 const MAX_LABEL_WIDTH_DOTS = 2400
@@ -63,6 +68,7 @@ const rotationEnum = z.enum(['N', 'R', 'I', 'B'])
  * in history, it just isn't printed by this process.
  */
 const printTargetEnum = z.enum(['server', 'local'])
+  .describe('"server" prints via CUPS on the host. "local" persists the job and returns the generated ZPL for the browser to push over WebUSB, to be finalized with POST /api/jobs/{id}/result.')
 
 /**
  * How a request says which printer to use.
@@ -78,12 +84,12 @@ const printTargetEnum = z.enum(['server', 'local'])
  */
 const printerSelectionFields = {
   target: printTargetEnum.optional().default('server'),
-  /** Configured printer to print on. Omit to use the default printer. */
-  printerId: z.string().min(1).max(64).optional(),
-  /** Name to record on the job, for printers the server can't name itself. */
-  printerName: z.string().min(1).max(120).optional(),
-  /** Geometry to render for, overriding the printer's saved configuration. */
+  printerId: z.string().min(1).max(64).optional()
+    .describe('Configured printer to print on. Omit to use the default printer. An id beginning "local_" is a browser-attached printer, and the ZPL is returned instead of printed.'),
+  printerName: z.string().min(1).max(120).optional()
+    .describe('Name to record on the job, for printers the server cannot name itself.'),
   labelSize: labelGeometrySchema.optional()
+    .describe('Geometry to render for, overriding the printer\'s saved configuration. Required for a browser-attached printer, whose configuration the server cannot see.')
 }
 
 // ─── Endpoint Schemas ───────────────────────────────────────────────────────
@@ -268,10 +274,49 @@ const templateElementSchema = z.discriminatedUnion('type', [
   templateBoxElementSchema
 ])
 
+// ─── Template short names (webhook slugs) ───────────────────────────────────
+
+/**
+ * Trimmed and lowercased *before* validation, so nobody has to remember
+ * capitalisation in a URL and there is one spelling of any slug in the database.
+ * Two rows differing only in case would be indistinguishable in a webhook URL.
+ */
+export const templateShortNameSchema = z.string()
+  .meta({
+    examples: ['part-2x1'],
+    description: 'Public slug for webhook printing: POST /api/print/template/{shortName}. '
+      + 'Lowercase alphanumerics in hyphen-separated groups, normalised on write and matched '
+      + 'case-insensitively. Unique across your own templates and the built-in presets. Omit to '
+      + 'leave the template unreachable by webhook — nothing is generated automatically. Send '
+      + 'null or "" to clear it.'
+  })
+  .trim()
+  .toLowerCase()
+  .min(MIN_TEMPLATE_SHORT_NAME_LENGTH, `Short name must be at least ${MIN_TEMPLATE_SHORT_NAME_LENGTH} characters`)
+  .max(MAX_TEMPLATE_SHORT_NAME_LENGTH, `Short name must be at most ${MAX_TEMPLATE_SHORT_NAME_LENGTH} characters`)
+  .regex(
+    TEMPLATE_SHORT_NAME_PATTERN,
+    'Use lowercase letters, numbers, and single hyphens between them — e.g. "part-2x1". '
+      + 'No spaces, underscores, leading or trailing hyphens.'
+  )
+  .refine(value => !RESERVED_TEMPLATE_SHORT_NAMES.includes(value), {
+    message: 'That short name is reserved for the API\'s own paths. Try adding a qualifier, e.g. "label-2x1" instead of "label".'
+  })
+
+/**
+ * `''` and `null` both mean "no short name": a form binding an empty input and a
+ * client explicitly nulling the field are saying the same thing.
+ */
+export const optionalTemplateShortNameSchema = z.preprocess(
+  value => (value === '' || value === null ? undefined : value),
+  templateShortNameSchema.optional()
+)
+
 /** POST/PUT /api/templates — full template definition */
 export const templateSchema = z.object({
   name: z.string().min(1, 'Template name is required').max(100),
   description: z.string().max(500).optional(),
+  shortName: optionalTemplateShortNameSchema,
   baseWidthDots: z.number().int().min(1),
   baseHeightDots: z.number().int().min(1),
   variables: z.array(templateVariableSchema).max(50).default([]),
@@ -279,6 +324,108 @@ export const templateSchema = z.object({
   // sizeKey -> elementId -> partial overrides (loosely validated)
   overrides: z.record(z.string(), z.record(z.string(), z.record(z.string(), z.unknown()))).default({})
 }).strict()
+
+// ─── Template printing (webhooks) ───────────────────────────────────────────
+
+/**
+ * Load-bearing, not documentation: the flat payload form uses this to tell a
+ * control field from a variable. Adding one is a mild compatibility event for flat
+ * callers using that word as a variable name. Nested `variables` is immune, which
+ * is why it is canonical.
+ */
+export const TEMPLATE_PRINT_CONTROL_KEYS = [
+  'variables',
+  'quantity',
+  'copies',
+  'dryRun',
+  'allowMissingVariables',
+  'target',
+  'printerId',
+  'printerName',
+  'labelSize'
+] as const
+
+/**
+ * Numbers and booleans are stringified, because a payload assembled by another
+ * service usually has real JSON numbers in it. Objects, arrays and null are
+ * rejected: `JSON.stringify`-ing one onto a label produces a bad label rather
+ * than an error.
+ */
+const templateVariableValueSchema = z.union([
+  z.string().max(2000, 'Variable values are limited to 2000 characters'),
+  z.number().finite(),
+  z.boolean()
+]).transform(value => String(value))
+  .describe('Numbers and booleans are accepted and stringified. Objects, arrays and null are rejected. An empty string is an explicit blank, distinct from omitting the variable.')
+
+export const templateVariablesSchema = z.record(
+  z.string().regex(/^[A-Za-z0-9_]+$/, 'Variable names use letters, numbers, and underscores only'),
+  templateVariableValueSchema
+).describe('Values keyed by variable name. Unknown names are rejected rather than ignored, so a typo is an error rather than a blank field on a physical label.')
+
+/**
+ * Fold a flat payload into the canonical nested shape, so everything downstream
+ * sees one form. Flat is accepted because plenty of services emit a fixed payload
+ * and cannot be persuaded to nest anything.
+ *
+ * A body that already has `variables` passes through untouched, so a stray sibling
+ * key is reported by `.strict()` rather than silently becoming a variable — mixing
+ * the forms is likelier a mistake than an intention.
+ */
+function foldFlatVariables(body: unknown): unknown {
+  if (body === null || typeof body !== 'object' || Array.isArray(body)) return body
+  const source = body as Record<string, unknown>
+  if ('variables' in source) return source
+
+  const control: Record<string, unknown> = {}
+  // Null-prototype, because variable names are allowed to contain underscores and
+  // so `__proto__` matches the name pattern. Assigning that key on a plain object
+  // would mutate the prototype and silently drop the value.
+  const variables: Record<string, unknown> = Object.create(null)
+  for (const [key, value] of Object.entries(source)) {
+    if ((TEMPLATE_PRINT_CONTROL_KEYS as readonly string[]).includes(key)) {
+      control[key] = value
+    } else {
+      variables[key] = value
+    }
+  }
+  return { ...control, variables }
+}
+
+/**
+ * POST /api/print/template/:shortName
+ *
+ * Every field is optional: an empty body prints one copy of a template that takes
+ * no variables, on the default printer, at that printer's stock.
+ *
+ * Variable *names* are checked in the handler, which knows which template is being
+ * printed; this schema does not.
+ */
+export const templatePrintSchema = z.preprocess(
+  foldFlatVariables,
+  z.object({
+    /** Canonical; also populated from a flat payload by the preprocess above. */
+    variables: templateVariablesSchema.optional().default({})
+      .describe('Variable values by name. Any top-level key that is not one of the fields listed here is also read as a variable, for callers whose payload shape is fixed and flat.'),
+    quantity: copiesSchema.optional(),
+    copies: copiesSchema.optional()
+      .describe('Synonym of `quantity`, for consistency with the other print endpoints. Sending both with different values is an error.'),
+    dryRun: z.boolean().optional().default(false)
+      .describe('Render and return the ZPL without printing or recording a job. Use this while wiring up an integration.'),
+    allowMissingVariables: z.boolean().optional().default(false)
+      .describe('Let variables the template\'s layout references be absent, rendering them blank. Off by default because a missing value leaves a gap the caller cannot see. A variable\'s sample value is never substituted either way.'),
+    ...printerSelectionFields
+  }).strict()
+    .refine(
+      data => data.quantity === undefined || data.copies === undefined || data.quantity === data.copies,
+      {
+        message: 'Send either `quantity` or `copies`, not both with different values',
+        path: ['quantity']
+      }
+    )
+    // Collapse the synonym so the handler only ever reads `quantity`.
+    .transform(({ copies, ...rest }) => ({ ...rest, quantity: rest.quantity ?? copies ?? 1 }))
+)
 
 // ─── Serial / batch printing ────────────────────────────────────────────────
 
@@ -296,6 +443,47 @@ export const serialLabelSchema = z.object({
   serialFormat: z.enum(['#', '##', '###', '####', '#####']).optional().default('###'),
   /** Configured printer to print on. Omit to use the default printer. */
   printerId: z.string().min(1).max(64).optional()
+}).strict()
+
+// ─── Settings and label size ────────────────────────────────────────────────
+
+/**
+ * PUT /api/settings — key/value settings.
+ *
+ * Open-ended by design: the settings store is a key/value table and callers add
+ * keys the server has no opinion about. Values are coerced to strings, which is how
+ * the column stores them either way — accepting a number here and writing "3" is
+ * friendlier than rejecting it.
+ *
+ * Previously this endpoint hand-rolled its validation, which meant it was the one
+ * PUT body with no schema to generate documentation from.
+ */
+export const settingsSchema = z.record(
+  z.string().min(1).max(200),
+  z.union([z.string().max(4000), z.number().finite(), z.boolean()])
+    .transform(value => String(value))
+    .describe('Setting value. Numbers and booleans are accepted and stored as strings.')
+).describe('Settings to write, keyed by name. Existing keys are overwritten; keys not sent are left alone.')
+
+/**
+ * PUT /api/label-size — the legacy global label size.
+ *
+ * Superseded by per-printer configuration; kept for installs with no printers
+ * registered and for library callers with no registry.
+ */
+export const labelSizeSchema = z.object({
+  widthDots: z.number().int()
+    .min(MIN_LABEL_WIDTH_DOTS, `Label width must be at least ${MIN_LABEL_WIDTH_DOTS} dots`)
+    .max(MAX_LABEL_WIDTH_DOTS),
+  heightDots: z.number().int()
+    .min(MIN_LABEL_HEIGHT_DOTS, `Label height must be at least ${MIN_LABEL_HEIGHT_DOTS} dots`)
+    .max(MAX_LABEL_LENGTH_DOTS),
+  name: z.string().max(100).optional()
+    .describe('Human-readable size name. Derived from the dimensions when omitted.'),
+  tracking: z.enum(MEDIA_TRACKINGS).optional()
+    .describe('Media tracking to send with the geometry. Defaults to the configured tracking.'),
+  applyToPrinter: z.boolean().optional()
+    .describe('Also push the geometry to the connected printer (^PW/^ML/^MN). Defaults to true — saving the setting alone only changes the ZPL this app generates, which is how a size change ends up producing clipped labels.')
 }).strict()
 
 // ─── Queue management ───────────────────────────────────────────────────────
@@ -326,19 +514,19 @@ export const jobResultSchema = z.object({
  * common case is an empty body meaning "apply the current label size".
  */
 export const printerConfigSchema = z.object({
-  /** Printer to configure. Omit to use the default printer. */
-  printerId: z.string().min(1).max(64).optional(),
+  printerId: z.string().min(1).max(64).optional()
+    .describe('Printer to configure. Omit to apply this printer\'s own saved configuration, which is what you want after swapping stock.'),
   widthDots: z.number().int().min(MIN_LABEL_WIDTH_DOTS).max(MAX_LABEL_WIDTH_DOTS).optional(),
   heightDots: z.number().int().min(MIN_LABEL_HEIGHT_DOTS).max(MAX_LABEL_LENGTH_DOTS).optional(),
   dpi: dpiSchema.optional(),
   tracking: z.enum(MEDIA_TRACKINGS).optional(),
   /** Black-mark offset in dots; only meaningful when tracking is 'mark' */
-  markOffset: z.number().int().min(-240).max(566).optional(),
-  /** Persist to the printer's non-volatile memory (^JUS) */
-  persist: z.boolean().optional(),
-  /** Run a sensor calibration (~JC) straight after applying the config */
-  calibrate: z.boolean().optional(),
-  /** 'local' returns the ZPL for the browser to send over WebUSB instead of printing */
+  markOffset: z.number().int().min(-240).max(566).optional()
+    .describe('Black-mark offset in dots. Only meaningful when tracking is "mark".'),
+  persist: z.boolean().optional()
+    .describe('Save to the printer\'s non-volatile memory (^JUS). Defaults to true.'),
+  calibrate: z.boolean().optional()
+    .describe('Run a sensor calibration (~JC) straight after applying. Feeds 2–4 labels.'),
   target: printTargetEnum.optional().default('server')
 }).strict()
 
@@ -398,6 +586,9 @@ export type JobResultRequest = z.infer<typeof jobResultSchema>
 export type PrinterConfigRequest = z.infer<typeof printerConfigSchema>
 export type PrinterCalibrateRequest = z.infer<typeof printerCalibrateSchema>
 export type PrinterCreateRequest = z.infer<typeof printerCreateSchema>
+export type TemplatePrintRequest = z.infer<typeof templatePrintSchema>
+export type SettingsRequest = z.infer<typeof settingsSchema>
+export type LabelSizeRequest = z.infer<typeof labelSizeSchema>
 export type PrinterUpdateRequest = z.infer<typeof printerUpdateSchema>
 export type LabelGeometryRequest = z.infer<typeof labelGeometrySchema>
 export type TemplateDefinition = z.infer<typeof templateSchema>

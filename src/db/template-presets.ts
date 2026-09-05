@@ -19,6 +19,12 @@
  *
  * ASCII only. Zebra's built-in fonts have no UTF-8, so separators are `|` rather
  * than a middle dot or en dash.
+ *
+ * Each preset carries a `shortName`, which is its webhook slug — `part-2x1` is
+ * printable at `POST /api/print/template/part-2x1` on a fresh install with nothing
+ * configured. Those slugs are **public API**: renaming one breaks every external
+ * caller that hardcoded the URL, so treat them as frozen even though the layout
+ * around them is free to improve.
  */
 
 import type { TemplateDefinition } from '../schemas'
@@ -215,6 +221,7 @@ function partLabel2x1(): TemplateDefinition {
 
   return {
     name: 'Part Label 2x1',
+    shortName: 'part-2x1',
     description: 'Everyday part label: QR left, part name / number / rev+serial / ticket right. Matches the Part Label page.',
     baseWidthDots: s.w,
     baseHeightDots: s.h,
@@ -259,6 +266,7 @@ function bagLabel2x1(): TemplateDefinition {
 
   return {
     name: 'Bag Label 2x1',
+    shortName: 'bag-2x1',
     description: 'Bag/bin summary label: title, rules top and bottom, and the total quantity instead of a serial.',
     baseWidthDots: s.w,
     baseHeightDots: s.h,
@@ -329,6 +337,7 @@ function partLabel3x5Landscape(): TemplateDefinition {
 
   return {
     name: 'Part Label 3x5 (landscape)',
+    shortName: 'part-3x5-landscape',
     description: 'Large part/traveler label for 3x5 stock read sideways. Turn the label a quarter-turn counter-clockwise. Elements are rotated 90deg, so it looks sideways in the designer.',
     baseWidthDots: SIZE_3X5.w,
     baseHeightDots: SIZE_3X5.h,
@@ -366,6 +375,7 @@ function assetTag3x5Landscape(): TemplateDefinition {
 
   return {
     name: 'Asset Tag 3x5 (landscape)',
+    shortName: 'asset-3x5-landscape',
     description: 'Asset/inventory tag for 3x5 stock read sideways: large CODE128 plus QR, then asset ID, description and location.',
     baseWidthDots: SIZE_3X5.w,
     baseHeightDots: SIZE_3X5.h,
@@ -454,4 +464,24 @@ export function presetTemplate(id: string): PresetTemplate | null {
 /** Build every preset, in catalogue order. */
 export function listPresetTemplates(): PresetTemplate[] {
   return TEMPLATE_PRESETS.map(p => ({ ...p.build(), id: p.id, readOnly: true }))
+}
+
+/**
+ * Find a preset by its public short name, or null.
+ *
+ * Builds each preset to read its `shortName`, which is cheap — they are plain
+ * functions over a few dozen numbers — and keeps the slug defined in exactly one
+ * place instead of duplicated into the catalogue table.
+ */
+export function presetTemplateByShortName(shortName: string): PresetTemplate | null {
+  const wanted = shortName.trim().toLowerCase()
+  if (!wanted) return null
+  return listPresetTemplates().find(p => p.shortName?.toLowerCase() === wanted) ?? null
+}
+
+/** Every short name the presets occupy, lowercased. */
+export function presetShortNames(): string[] {
+  return listPresetTemplates()
+    .map(p => p.shortName?.toLowerCase())
+    .filter((s): s is string => !!s)
 }

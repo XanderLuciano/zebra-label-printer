@@ -18,7 +18,7 @@ import {
   toPrintElements,
   usedVariables,
   type LabelTemplate
-} from '../../web/app/composables/useTemplateEngine'
+} from '../../src/template-engine'
 
 /** Resolve a preset with every variable set to its sample value. */
 function resolveWithSamples(build: () => ReturnType<typeof TEMPLATE_PRESETS[number]['build']>) {

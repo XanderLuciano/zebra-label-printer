@@ -7,9 +7,9 @@
 
 import { eq } from 'drizzle-orm'
 import type { ServerResponse } from 'http'
-import type { ZodSchema } from 'zod'
 import type { Handler } from '../router'
-import { json, readBody, validate, checkAuth } from '../helpers'
+import { json, readBody, parseJson, validate, validateValue, checkAuth } from '../helpers'
+import { sendError } from '../errors'
 import { ZPLBuilder, textLabel, barcodeLabel, qrLabel } from '../../zpl'
 import { getDb } from '../../db/database'
 import { printJobs } from '../../db/schema'
@@ -40,6 +40,7 @@ import { isUnresolved, resolveJobLabelSize, unresolvedMessage } from '../../prin
 import { isLocalPrinterId } from '../../db/printer-repo'
 import type { PrintTarget } from '../../constants'
 import { LOCAL_PRINTER_NAME } from '../../constants'
+import type { PrintLabelElement } from '../../template-engine'
 
 type GetRegistry = () => PrinterRegistry | null
 
@@ -50,12 +51,12 @@ type GetRegistry = () => PrinterRegistry | null
  * distinguished "this server" from "the browser". Both are accepted so existing
  * callers keep working.
  */
-interface PrinterSelection extends SubmitOptions {
+export interface PrinterSelection extends SubmitOptions {
   target: PrintTarget
 }
 
 /** Pull the printer selection out of a validated request body. */
-function selectionOf(data: {
+export function selectionOf(data: {
   target: PrintTarget
   printerId?: string
   printerName?: string
@@ -91,7 +92,7 @@ function isLocalPrint(selection: PrinterSelection): boolean {
  *   `target: 'local'`, persists the job and returns `zpl` for the caller to
  *   transmit over WebUSB; the caller then reports back via /api/jobs/:id/result.
  */
-async function dispatchPrint(
+export async function dispatchPrint(
   res: ServerResponse,
   printer: Printer | null,
   queue: PrintQueue | null,
@@ -99,12 +100,17 @@ async function dispatchPrint(
   jobType: JobType,
   requestData: unknown,
   selection: PrinterSelection,
-  zplGen: ZplGenerator
+  zplGen: ZplGenerator,
+  /**
+   * Merged into a successful response, so an endpoint can add its own context
+   * without a second copy of the dispatch logic or a divergent response shape.
+   */
+  extra: Record<string, unknown> = {}
 ): Promise<void> {
   try {
     if (isLocalPrint(selection)) {
       if (!queue) {
-        json(res, { error: 'Local printing requires the job queue' }, 503)
+        sendError(res, 'QUEUE_UNAVAILABLE', 'Local printing requires the job queue')
         return
       }
       const { jobId, zpl, labelSize } = queue.prepareExternal(jobType, requestData, zplGen, {
@@ -119,7 +125,8 @@ async function dispatchPrint(
         target: 'local',
         queued: false,
         labelSize,
-        printerId: selection.printerId ?? null
+        printerId: selection.printerId ?? null,
+        ...extra
       })
       return
     }
@@ -129,7 +136,9 @@ async function dispatchPrint(
     if (registry && selection.printerId) {
       const resolved = await registry.resolve(selection.printerId)
       if (isUnresolved(resolved) && resolved.reason === 'unknown-printer') {
-        json(res, { error: unresolvedMessage(resolved.reason), printerId: selection.printerId }, 404)
+        sendError(res, 'PRINTER_NOT_FOUND', unresolvedMessage(resolved.reason), {
+          extra: { printerId: selection.printerId }
+        })
         return
       }
     }
@@ -140,34 +149,62 @@ async function dispatchPrint(
         printerName: selection.printerName,
         labelSize: selection.labelSize
       })
+      if (!result.success) {
+        sendError(res, 'PRINT_FAILED', result.error ?? 'Print failed', {
+          extra: {
+            success: false,
+            jobId: result.jobId,
+            queued: result.queued,
+            target: 'server',
+            labelSize: result.labelSize,
+            printerId: selection.printerId ?? registry?.defaultProfile()?.id ?? null,
+            ...extra
+          }
+        })
+        return
+      }
       json(res, {
-        success: result.success,
+        success: true,
         jobId: result.jobId,
         queued: result.queued,
         target: 'server',
         labelSize: result.labelSize,
         printerId: selection.printerId ?? registry?.defaultProfile()?.id ?? null,
-        ...(result.error ? { error: result.error } : {})
-      }, result.success ? 200 : 500)
+        ...extra
+      })
       return
     }
 
     // No queue (library/CLI usage): print directly, no job record
     const labelSize = resolveJobLabelSize(registry, selection)
     if (!printer) {
-      json(res, { error: 'No printer connected' }, 503)
+      sendError(res, 'NO_PRINTER', 'No printer connected')
       return
     }
     const result = await printer.print(zplGen(labelSize))
-    json(res, { ...result, labelSize }, result.success ? 200 : 500)
+    if (!result.success) {
+      sendError(res, 'PRINT_FAILED', result.error ?? 'Print failed', {
+        extra: { ...result, success: false, labelSize, ...extra }
+      })
+      return
+    }
+    json(res, { ...result, labelSize, ...extra })
   } catch (err) {
-    json(res, { error: (err as Error).message }, 400)
+    sendError(res, 'RENDER_FAILED', (err as Error).message)
   }
 }
 
+/**
+ * Two producers, one shape: the `elements[]` a client posts to /api/print/label,
+ * and `resolveTemplate()`'s output. The engine's version types every field optional
+ * because the browser also feeds it to an SVG preview, so the union is wider than
+ * `LabelElement` — hence the per-element cast below rather than at each call site.
+ */
+type ElementPayload = LabelRequest['elements'][number] | PrintLabelElement
+
 /** Shared ZPL builder setup for element-composed labels. */
-function buildElementZpl(
-  elements: LabelRequest['elements'],
+export function buildElementZpl(
+  elements: readonly ElementPayload[],
   labelSize: JobLabelSize,
   copies?: number
 ): string {
@@ -255,34 +292,49 @@ export function printZplHandler(
   return async (req, res, printer) => {
     if (!checkAuth(req, res, apiKey)) return
 
+    // Read once. This used to call validate() for the JSON form, which reads the
+    // body itself — a second read of a consumed stream never sees another 'end',
+    // so the promise never settled and the request hung forever, leaking a socket
+    // per call. The raw text/plain form worked, which is what hid it.
     const raw = await readBody(req)
+    const trimmed = raw.trim()
+
+    if (!trimmed) {
+      sendError(res, 'BAD_REQUEST', 'ZPL commands required', {
+        message: 'Send ZPL as a text/plain body, or as JSON: {"zpl": "^XA...^XZ"}'
+      })
+      return
+    }
 
     let zpl: string
     let selection: PrinterSelection = { target: 'server', printerId: null, printerName: null, labelSize: null }
-    if (raw && !raw.trim().startsWith('{') && !raw.trim().startsWith('[')) {
-      zpl = raw.trim()
+
+    // A body that isn't JSON is taken as raw ZPL, which is how the endpoint has
+    // always accepted `Content-Type: text/plain`.
+    if (!trimmed.startsWith('{') && !trimmed.startsWith('[')) {
+      zpl = trimmed
     } else {
-      const data = await validate<{
-        zpl: string
-        target?: PrintTarget
-        printerId?: string
-        printerName?: string
-      }>(
-        req, res,
-        zplSchema as unknown as ZodSchema<{
-          zpl: string
-          target?: PrintTarget
-          printerId?: string
-          printerName?: string
-        }>
-      )
+      const parsed = parseJson(raw)
+      if (parsed === null) {
+        sendError(res, 'INVALID_JSON', 'Invalid JSON body', {
+          message: 'The body starts with { or [ but is not valid JSON. '
+            + 'Send raw ZPL as text/plain, or valid JSON: {"zpl": "^XA...^XZ"}'
+        })
+        return
+      }
+      const data = validateValue(res, zplSchema, parsed)
       if (!data) return
-      zpl = data.zpl
-      selection = selectionOf({ ...data, target: data.target ?? 'server' })
+      // zplSchema is a union: a bare string is also accepted as the whole body.
+      if (typeof data === 'string') {
+        zpl = data.trim()
+      } else {
+        zpl = data.zpl.trim()
+        selection = selectionOf({ ...data, target: data.target ?? 'server' })
+      }
     }
 
-    if (!zpl || zpl.length === 0) {
-      json(res, { error: 'ZPL commands required' }, 400)
+    if (!zpl) {
+      sendError(res, 'BAD_REQUEST', 'ZPL commands required')
       return
     }
 

@@ -191,6 +191,25 @@ export interface WebhookConfig {
   defaultPrinter?: string;
   /** Raw TCP passthrough port (default: 9100, set to 0 to disable) */
   tcpPort?: number;
+  /**
+   * Origins allowed to call the API from a browser.
+   *
+   * `['*']` (the default) allows any origin, which is how this server has always
+   * behaved. Listing specific origins narrows it: a matching `Origin` is echoed
+   * back, anything else gets no CORS header and is refused by the browser.
+   *
+   * Worth setting on any install reachable from a network you don't control,
+   * together with `apiKey` — the print endpoints spend physical label stock, so a
+   * page the operator merely *visits* can otherwise drive the printer.
+   */
+  corsOrigins?: string[];
+  /**
+   * Template-print requests allowed per minute, per client address. 0 disables.
+   *
+   * Applies to the webhook print routes only. A bound on runaway loops rather
+   * than a security control; see src/server/rate-limit.ts.
+   */
+  printRateLimitPerMinute?: number;
 }
 
 /** Label size configuration */

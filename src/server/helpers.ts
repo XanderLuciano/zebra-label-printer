@@ -2,10 +2,16 @@
  * Server helpers — HTTP response utilities, body parsing, auth, and validation.
  *
  * Small, pure functions with no side effects beyond the response object.
+ *
+ * Error responses are built by `sendError()` in ./errors, which owns the status
+ * code and the `code` taxonomy. Handlers should prefer it over `json(res, {
+ * error }, status)` so failures stay branchable by machines as well as readable
+ * by people.
  */
 
 import type { IncomingMessage, ServerResponse } from 'http'
 import type { ZodSchema } from 'zod'
+import { sendError, zodDetails, zodSummary } from './errors'
 
 /** Send a JSON response */
 export function json(res: ServerResponse, data: unknown, status = 200): void {
@@ -40,6 +46,10 @@ export function parseJson(raw: string): unknown {
 /**
  * Validate request body against a Zod schema.
  * Returns parsed data, or sends a 400 and returns null on failure.
+ *
+ * The failure body keeps its original `error` and `details` fields and gains a
+ * machine-readable `code`, so existing clients are unaffected and integrations
+ * have something stable to branch on. See src/server/errors.ts.
  */
 export async function validate<T>(
   req: IncomingMessage,
@@ -50,7 +60,9 @@ export async function validate<T>(
 
   const parsed = parseJson(raw)
   if (parsed === null) {
-    json(res, { error: 'Invalid JSON body' }, 400)
+    sendError(res, 'INVALID_JSON', 'Invalid JSON body', {
+      message: 'The request body could not be parsed as JSON.'
+    })
     return null
   }
 
@@ -59,13 +71,30 @@ export async function validate<T>(
     return result.data
   }
 
-  json(res, {
-    error: 'Validation failed',
-    details: result.error.issues.map(issue => ({
-      field: issue.path.length > 0 ? issue.path.join('.') : '(root)',
-      message: issue.message
-    }))
-  }, 400)
+  sendError(res, 'VALIDATION_FAILED', 'Validation failed', {
+    message: zodSummary(result.error),
+    details: zodDetails(result.error)
+  })
+  return null
+}
+
+/**
+ * Validate an already-parsed value against a Zod schema.
+ *
+ * Same response shape as `validate()`, for handlers that have the body in hand
+ * already — a path parameter folded into the payload, say.
+ */
+export function validateValue<T>(
+  res: ServerResponse,
+  schema: ZodSchema<T>,
+  value: unknown
+): T | null {
+  const result = schema.safeParse(value)
+  if (result.success) return result.data
+  sendError(res, 'VALIDATION_FAILED', 'Validation failed', {
+    message: zodSummary(result.error),
+    details: zodDetails(result.error)
+  })
   return null
 }
 
@@ -87,8 +116,10 @@ export function checkAuth(
   const url = new URL(req.url ?? '/', `http://${req.headers.host}`)
   if (url.searchParams.get('key') === apiKey) return true
 
-  json(res, {
-    error: 'Unauthorized — provide a valid API key via Bearer auth or ?key= query param'
-  }, 401)
+  sendError(
+    res,
+    'UNAUTHORIZED',
+    'Unauthorized — provide a valid API key via Bearer auth or ?key= query param'
+  )
   return false
 }

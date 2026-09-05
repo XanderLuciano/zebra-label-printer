@@ -422,7 +422,16 @@ export class PrintQueue {
       case 'label': {
         const elements = data.elements as Array<Record<string, unknown>>
         if (elements?.length) {
-          const builder = new ZPLBuilder({ width: labelSize.widthDots, height: labelSize.heightDots })
+          // `copies` has to be carried through. Without it a *queued* multi-copy
+          // job rebuilt here emitted no ^PQ and printed a single label, so asking
+          // for 50 while the printer was offline quietly produced 1 when it came
+          // back — the immediate path was fine, which is what hid this.
+          const copies = typeof data.copies === 'number' ? data.copies : 1
+          const builder = new ZPLBuilder({
+            width: labelSize.widthDots,
+            height: labelSize.heightDots,
+            copies
+          })
           builder.labelSize(labelSize.widthDots, labelSize.heightDots)
           for (const el of elements) {
             // eslint-disable-next-line @typescript-eslint/no-explicit-any

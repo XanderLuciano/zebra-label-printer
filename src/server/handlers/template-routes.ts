@@ -12,6 +12,7 @@
 
 import type { Handler } from '../router'
 import { json, validate, checkAuth } from '../helpers'
+import { sendError } from '../errors'
 import { ZPLBuilder } from '../../zpl'
 import { getLabelSize } from '../../db/settings-repo'
 import {
@@ -63,7 +64,7 @@ export function templateGetHandler(apiKey: string, id: string): Handler {
     if (!checkAuth(req, res, apiKey)) return
     const tpl = findTemplate(id)
     if (!tpl) {
-      json(res, { error: 'Template not found' }, 404)
+      sendError(res, 'TEMPLATE_NOT_FOUND', 'Template not found')
       return
     }
     json(res, { template: tpl })
@@ -88,14 +89,14 @@ export function templateUpdateHandler(apiKey: string, id: string): Handler {
     // Checked before validating the body: the answer is the same either way, and
     // a schema complaint would be a confusing thing to get back.
     if (isProtectedPreset(id)) {
-      json(res, PRESET_IMMUTABLE, 403)
+      sendError(res, 'PRESET_IMMUTABLE', PRESET_IMMUTABLE.error)
       return
     }
     const data = await validate<TemplateDefinition>(req, res, templateSchema)
     if (!data) return
     const tpl = updateTemplate(id, data)
     if (!tpl) {
-      json(res, { error: 'Template not found' }, 404)
+      sendError(res, 'TEMPLATE_NOT_FOUND', 'Template not found')
       return
     }
     json(res, { template: tpl })
@@ -107,12 +108,12 @@ export function templateDeleteHandler(apiKey: string, id: string): Handler {
   return async (req, res, _printer) => {
     if (!checkAuth(req, res, apiKey)) return
     if (isProtectedPreset(id)) {
-      json(res, PRESET_IMMUTABLE, 403)
+      sendError(res, 'PRESET_IMMUTABLE', PRESET_IMMUTABLE.error)
       return
     }
     const removed = deleteTemplate(id)
     if (!removed) {
-      json(res, { error: 'Template not found' }, 404)
+      sendError(res, 'TEMPLATE_NOT_FOUND', 'Template not found')
       return
     }
     json(res, { success: true })
@@ -138,7 +139,7 @@ export function renderZplHandler(apiKey: string): Handler {
       }
       json(res, { zpl: builder.build(), widthDots: width, heightDots: height })
     } catch (err) {
-      json(res, { error: (err as Error).message }, 400)
+      sendError(res, 'RENDER_FAILED', (err as Error).message)
     }
   }
 }

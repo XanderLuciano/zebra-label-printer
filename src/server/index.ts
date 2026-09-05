@@ -18,7 +18,7 @@ import { PrintQueue } from '../queue'
 import { startRawTcpServer } from '../raw-tcp'
 import { json } from './helpers'
 import type { RouteTable, Handler } from './router'
-import { findHandler, sendNotFound, printRoutes } from './router'
+import { findHandler, sendNotFound, printRoutes, matchTemplatePrintPath } from './router'
 import {
   healthHandler,
   printersDiscoveredHandler,
@@ -67,6 +67,11 @@ import {
   templateDeleteHandler,
   renderZplHandler
 } from './handlers/template-routes'
+import {
+  templatePrintHandler,
+  templateSchemaHandler
+} from './handlers/template-print-routes'
+import { RateLimiter } from './rate-limit'
 import { closeDb, getDb } from '../db/database'
 import { PrinterRegistry, isUnresolved } from '../printer-registry'
 import { PrinterHealthMonitor } from '../printer-health'
@@ -80,8 +85,33 @@ import {
   DEFAULT_TCP_PORT,
   DEFAULT_HOST,
   UPDATE_CHECK_INTERVAL_MS,
-  INITIAL_UPDATE_DELAY_MS
+  INITIAL_UPDATE_DELAY_MS,
+  DEFAULT_PRINT_RATE_LIMIT_PER_MINUTE
 } from '../constants'
+
+// ─── Configuration parsing ───────────────────────────────────────────────────
+
+/** Unset or blank means `['*']`, so an upgrade doesn't break a browser integration. */
+function parseCorsOrigins(raw: string | undefined): string[] {
+  const entries = (raw ?? '').split(',').map(s => s.trim()).filter(Boolean)
+  return entries.length > 0 ? entries : ['*']
+}
+
+function parseRateLimit(raw: string | undefined): number {
+  if (raw === undefined || raw.trim() === '') return DEFAULT_PRINT_RATE_LIMIT_PER_MINUTE
+  const parsed = Number.parseInt(raw, 10)
+  // A malformed value falls back to the default, not to "unlimited": reading a
+  // config mistake as no limit silently removes the protection someone wanted.
+  if (!Number.isFinite(parsed) || parsed < 0) return DEFAULT_PRINT_RATE_LIMIT_PER_MINUTE
+  return parsed
+}
+
+/** Null means send no allow header. Callers must set `Vary: Origin` when this consults the request. */
+function allowedOrigin(origin: string | undefined, allowlist: string[]): string | null {
+  if (allowlist.includes('*')) return '*'
+  if (!origin) return null
+  return allowlist.includes(origin) ? origin : null
+}
 
 // ─── Server ──────────────────────────────────────────────────────────────────
 
@@ -104,6 +134,11 @@ export class WebhookServer {
    */
   private health: PrinterHealthMonitor = new PrinterHealthMonitor()
   private queue: PrintQueue | null = null
+  /**
+   * Template-print webhooks only: the routes reachable cross-origin without a
+   * person at the keyboard, and the ones that turn a request into physical labels.
+   */
+  private printLimiter: RateLimiter
   private config: Required<WebhookConfig>
   private routes: RouteTable
   private updateTimer: ReturnType<typeof setInterval> | null = null
@@ -115,8 +150,12 @@ export class WebhookServer {
       host: config.host ?? DEFAULT_HOST,
       apiKey: config.apiKey ?? '',
       defaultPrinter: config.defaultPrinter ?? '',
-      tcpPort: config.tcpPort ?? DEFAULT_TCP_PORT
+      tcpPort: config.tcpPort ?? DEFAULT_TCP_PORT,
+      corsOrigins: config.corsOrigins ?? parseCorsOrigins(process.env.ZEBRA_CORS_ORIGINS),
+      printRateLimitPerMinute: config.printRateLimitPerMinute
+        ?? parseRateLimit(process.env.ZEBRA_PRINT_RATE_LIMIT)
     }
+    this.printLimiter = new RateLimiter(this.config.printRateLimitPerMinute)
     this.routes = new Map() // Built in start()
   }
 
@@ -264,6 +303,14 @@ export class WebhookServer {
       }
     }
 
+    // Before /api/templates/:id, so the 5-segment form isn't mistaken for an id.
+    if (method === 'GET' && pathname.startsWith('/api/templates/') && pathname.endsWith('/schema')) {
+      const parts = pathname.split('/')
+      if (parts.length === 5 && parts[3]) {
+        return templateSchemaHandler(this.config.apiKey, decodeURIComponent(parts[3]))
+      }
+    }
+
     // Pattern: /api/templates/:id (GET, PUT, DELETE)
     if (pathname.startsWith('/api/templates/')) {
       const parts = pathname.split('/')
@@ -275,14 +322,46 @@ export class WebhookServer {
       }
     }
 
+    // Under its own path segment rather than /api/print/:shortName, which would
+    // collide with the print verbs above and make every future verb a breaking
+    // change for whoever used that word as a short name.
+    const templateShortName = matchTemplatePrintPath(method, pathname)
+    if (templateShortName) return this.templatePrintRoute(templateShortName)
+
     return null
   }
 
+  private templatePrintRoute(shortName: string): Handler {
+    return templatePrintHandler(
+      this.config.apiKey,
+      shortName,
+      () => this.queue,
+      () => this.registry,
+      this.printLimiter
+    )
+  }
+
   private async handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
-    // CORS
-    res.setHeader('Access-Control-Allow-Origin', '*')
+    // ── CORS ────────────────────────────────────────────────────────────────
+    //
+    // Before routing, so every route is browser-callable without per-handler work.
+    // No `Access-Control-Allow-Credentials`: this API authenticates with a Bearer
+    // header or `?key=`, never a cookie, and it would be invalid alongside `*`.
+    const origin = allowedOrigin(req.headers.origin, this.config.corsOrigins)
+    if (origin) {
+      res.setHeader('Access-Control-Allow-Origin', origin)
+    }
+    if (!this.config.corsOrigins.includes('*')) {
+      // The allow header now varies by Origin, so caches must key on it. Omitted
+      // for the wildcard case, where Vary would only cost hit rate.
+      res.setHeader('Vary', 'Origin')
+    }
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS')
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+    // Without this a browser re-preflights every print, doubling the request count
+    // on the endpoint most likely to be called in a loop.
+    res.setHeader('Access-Control-Max-Age', '86400')
+    res.setHeader('Access-Control-Expose-Headers', 'X-RateLimit-Limit, X-RateLimit-Remaining, Retry-After')
 
     if (req.method === 'OPTIONS') {
       res.writeHead(204)

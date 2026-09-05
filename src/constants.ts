@@ -208,6 +208,34 @@ export const DEFAULT_EVENT_LIMIT = 50
 /** Number of recent label sizes to remember */
 export const MAX_RECENT_SIZES = 10
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// TEMPLATE SHORT NAMES (webhook slugs)
+// ═══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Deliberately narrow: a short name appears in a URL external services hardcode,
+ * so it is permanent once published, and a format admitting mixed case or
+ * punctuation invites two names differing only in ways nobody can see.
+ */
+export const TEMPLATE_SHORT_NAME_PATTERN = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+
+export const MIN_TEMPLATE_SHORT_NAME_LENGTH = 2
+export const MAX_TEMPLATE_SHORT_NAME_LENGTH = 64
+
+/**
+ * Reserving these costs a user one rename today and stops a future endpoint from
+ * shadowing — or being shadowed by — somebody's template. The print verbs are here
+ * because a template short-named `text` would collide with `/api/print/text`.
+ */
+export const RESERVED_TEMPLATE_SHORT_NAMES: readonly string[] = [
+  // Existing /api/print/* verbs
+  'text', 'barcode', 'qr', 'qrcode', 'zpl', 'label', 'serial',
+  // Path segments this API owns
+  'api', 'print', 'printer', 'printers', 'template', 'templates',
+  'job', 'jobs', 'render', 'schema', 'settings', 'health', 'docs',
+  'debug', 'version', 'update', 'preview', 'new', 'edit'
+]
+
 /**
  * Most copies a single print request may ask for.
  *
@@ -216,6 +244,14 @@ export const MAX_RECENT_SIZES = 10
  * endpoint and is well inside `^PQ`'s documented range.
  */
 export const MAX_COPIES = 500
+
+/**
+ * Two labels a second sustained: comfortably above any real integration, far below
+ * what empties a roll unnoticed. The webhook routes are CORS-open and, with no
+ * `ZEBRA_API_KEY`, unauthenticated, so any page the operator visits can drive the
+ * printer. Not a security control — an API key is.
+ */
+export const DEFAULT_PRINT_RATE_LIMIT_PER_MINUTE = 120
 
 /**
  * Above this, the UI asks the operator to confirm before printing.

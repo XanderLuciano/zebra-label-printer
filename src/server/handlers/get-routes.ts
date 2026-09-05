@@ -3,7 +3,9 @@
  */
 
 import type { Handler } from '../router'
-import { json, html, checkAuth } from '../helpers'
+import { json, html, checkAuth, validate } from '../helpers'
+import { settingsSchema, labelSizeSchema } from '../../schemas'
+import type { SettingsRequest, LabelSizeRequest } from '../../schemas'
 import { OPENAPI_SPEC, swaggerUiHtml } from '../../openapi'
 import {
   listJobs,
@@ -22,11 +24,8 @@ import {
   JOB_STATUSES,
   DEFAULT_DPI,
   DEFAULT_MEDIA_TRACKING,
-  MIN_LABEL_WIDTH_DOTS,
-  MIN_LABEL_HEIGHT_DOTS,
   UPDATE_CACHE_MINUTES
 } from '../../constants'
-import type { MediaTracking } from '../../constants'
 import type { PrintQueue } from '../../queue'
 import type { PrinterHealthMonitor } from '../../printer-health'
 
@@ -224,18 +223,13 @@ export function settingsPutHandler(apiKey: string): Handler {
   return async (req, res, _printer) => {
     if (!checkAuth(req, res, apiKey)) return
 
-    const { readBody: rb, parseJson } = await import('../helpers')
     const { setSetting } = await import('../../db/settings-repo')
 
-    const raw = await rb(req)
-    const data = parseJson(raw) as Record<string, unknown> | null
-    if (!data || typeof data !== 'object') {
-      json(res, { error: 'Expected JSON object of key/value pairs' }, 400)
-      return
-    }
+    const data = await validate<SettingsRequest>(req, res, settingsSchema)
+    if (!data) return
 
     for (const [key, value] of Object.entries(data)) {
-      setSetting(key, String(value))
+      setSetting(key, value)
     }
 
     json(res, { success: true })
@@ -272,29 +266,17 @@ export function labelSizePutHandler(apiKey: string): Handler {
   return async (req, res, printer) => {
     if (!checkAuth(req, res, apiKey)) return
 
-    const { readBody: rb, parseJson } = await import('../helpers')
+    const data = await validate<LabelSizeRequest>(req, res, labelSizeSchema)
+    if (!data) return
 
-    const raw = await rb(req)
-    const data = parseJson(raw) as Record<string, unknown> | null
-    if (!data || typeof data !== 'object') {
-      json(res, { error: 'Expected JSON object with widthDots and heightDots' }, 400)
-      return
-    }
-
-    const widthDots = Number(data.widthDots)
-    const heightDots = Number(data.heightDots)
-
-    if (!widthDots || !heightDots || widthDots < MIN_LABEL_WIDTH_DOTS || heightDots < MIN_LABEL_HEIGHT_DOTS) {
-      json(res, { error: `widthDots and heightDots required (min ${MIN_LABEL_WIDTH_DOTS}×${MIN_LABEL_HEIGHT_DOTS} dots)` }, 400)
-      return
-    }
+    const { widthDots, heightDots } = data
 
     const size = {
       widthInches: Number((widthDots / DEFAULT_DPI).toFixed(2)),
       heightInches: Number((heightDots / DEFAULT_DPI).toFixed(2)),
       widthDots,
       heightDots,
-      name: data.name as string || `${(widthDots / DEFAULT_DPI).toFixed(1)}×${(heightDots / DEFAULT_DPI).toFixed(1)}"`
+      name: data.name || `${(widthDots / DEFAULT_DPI).toFixed(1)}×${(heightDots / DEFAULT_DPI).toFixed(1)}"`
     }
 
     setLabelSize(size)
@@ -309,7 +291,7 @@ export function labelSizePutHandler(apiKey: string): Handler {
         widthDots,
         heightDots,
         dpi: DEFAULT_DPI,
-        tracking: (data.tracking as MediaTracking) ?? DEFAULT_MEDIA_TRACKING
+        tracking: data.tracking ?? DEFAULT_MEDIA_TRACKING
       })
       const result = await printer.print(zpl)
       printerConfig = result.success

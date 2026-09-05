@@ -27,7 +27,7 @@ import {
   BITMAP_MAX_MAGNIFICATION,
   ZPL_BUILDER_DEFAULT_RATIO,
   type ZplFontId
-} from '../../web/app/composables/useZplFonts'
+} from '../../src/zpl-fonts'
 
 describe('zplFont', () => {
   it('resolves every advertised font', () => {

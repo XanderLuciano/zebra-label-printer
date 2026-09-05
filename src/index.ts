@@ -65,7 +65,10 @@ export {
   zplSchema,
   labelSchema,
   serialLabelSchema,
-  clearJobsSchema
+  clearJobsSchema,
+  templateSchema,
+  templatePrintSchema,
+  templateShortNameSchema
 } from './schemas'
 export type {
   TextLabelRequest,
@@ -73,8 +76,41 @@ export type {
   QRLabelRequest,
   LabelRequest,
   SerialLabelRequest,
-  ClearJobsRequest
+  ClearJobsRequest,
+  TemplateDefinition,
+  TemplatePrintRequest
 } from './schemas'
+
+// Template rendering — resolve a stored template + variable values into the
+// `elements[]` the print API takes. Shared with the web designer, which
+// re-exports this module so a preview and a webhook print cannot disagree.
+export {
+  resolveTemplate,
+  toPrintElements,
+  substitute,
+  usedVariables,
+  effectiveElement,
+  sizeKey,
+  estimateBarcodeWidth,
+  is2dSymbology,
+  rotatedBounds,
+  rotationTransform,
+  isQuarterTurn
+} from './template-engine'
+export type {
+  LabelTemplate,
+  TemplateElement,
+  TemplateVariable,
+  ResolvedElement,
+  PrintLabelElement
+} from './template-engine'
+
+// ZPL font metrics — what the printer does with `^A`, measured rather than guessed
+export { measureZplText, zplFont, resolveFontSize, ZPL_FONT_IDS } from './zpl-fonts'
+export type { ZplFontId, ZplFontSpec, ZplTextMetrics } from './zpl-fonts'
+
+// Error envelope — the `code` taxonomy every failure response carries
+export type { ApiErrorCode, ApiErrorBody, ApiErrorDetail } from './server/errors'
 
 // OpenAPI spec (for custom docs integration)
 export { OPENAPI_SPEC, swaggerUiHtml } from './openapi'

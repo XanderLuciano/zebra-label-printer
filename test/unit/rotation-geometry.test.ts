@@ -18,7 +18,7 @@ import {
   type Box,
   type Rotation,
   type LabelTemplate
-} from '../../web/app/composables/useTemplateEngine'
+} from '../../src/template-engine'
 
 /** Rotate a point about a pivot the same way SVG's rotate(a, cx, cy) does. */
 function rotatePoint(x: number, y: number, degrees: number, cx: number, cy: number) {
