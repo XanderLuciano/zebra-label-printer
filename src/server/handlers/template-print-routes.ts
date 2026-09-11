@@ -16,12 +16,16 @@ import type { IncomingMessage, ServerResponse } from 'http'
 import type { Handler } from '../router'
 import { json, validate, checkAuth } from '../helpers'
 import { sendError } from '../errors'
-import { dispatchPrint, selectionOf, buildElementZpl } from './post-routes'
+import { dispatchPrint, selectionOf, buildElementZpl, assertKnownPrinter } from './post-routes'
+import type { PrinterSelection } from './post-routes'
 import { findTemplateByShortName } from '../../db/template-repo'
 import type { StoredTemplate } from '../../db/template-repo'
 import type { PresetTemplate } from '../../db/template-presets'
-import { templatePrintSchema } from '../../schemas'
+import { templatePrintSchema, DEFAULT_SERIAL_VARIABLE } from '../../schemas'
 import type { TemplatePrintRequest } from '../../schemas'
+import { sameLabelSize, findPrinterForSize } from '../../label-size-match'
+import { serialSequence } from '../../serial'
+import type { PrinterProfile } from '../../types'
 import {
   resolveTemplate,
   toPrintElements,
@@ -35,6 +39,7 @@ import { resolveJobLabelSize } from '../../printer-registry'
 import type { JobLabelSize } from '../../db/print-job-repo'
 import type { RateLimiter } from '../rate-limit'
 import { rateLimitKey } from '../rate-limit'
+import { LOCAL_PRINTER_ID_PREFIX, LOCAL_PRINTER_NAME } from '../../constants'
 
 type GetQueue = () => PrintQueue | null
 type GetRegistry = () => PrinterRegistry | null
@@ -42,6 +47,54 @@ type GetRegistry = () => PrinterRegistry | null
 interface PrintWarning {
   code: string
   message: string
+}
+
+/** How the printer for this print was chosen, so a caller can see why. */
+type PrinterSelectionReason =
+  /** The request named a `printerId`. */
+  | 'explicit'
+  /** The request pinned `labelSize`, so the default printer's stock is irrelevant. */
+  | 'pinned-label-size'
+  /** Routed to a printer loaded with the stock this template was designed for. */
+  | 'label-size-match'
+  /** The default printer, either because it already fits or because nothing better exists. */
+  | 'default'
+
+/**
+ * A printer loaded with the stock this template was designed for, or null to leave
+ * the choice alone.
+ *
+ * Exists because the failure it prevents is invisible until the label comes out: a
+ * 3×5 design sent to the default printer loaded with 2×1 stock scales down and prints
+ * cropped and unreadable. The information needed to avoid that is already on the
+ * server — each printer records the stock it holds — so it may as well use it.
+ *
+ * Returns null, meaning "keep the default", when:
+ *
+ *   - the default printer already holds the right stock, so there is nothing to fix;
+ *   - the template carries a per-size override for the default printer's stock, which
+ *     means the author designed for that size deliberately and scaling is intended;
+ *   - no configured printer holds the right stock, in which case the caller gets the
+ *     default plus a LABEL_SIZE_MISMATCH warning rather than a failure.
+ */
+export function printerForTemplate(
+  registry: Pick<PrinterRegistry, 'profiles' | 'defaultProfile'> | null,
+  tpl: Pick<LabelTemplate, 'baseWidthDots' | 'baseHeightDots' | 'overrides'>
+): PrinterProfile | null {
+  if (!registry) return null
+
+  const base = { widthDots: tpl.baseWidthDots, heightDots: tpl.baseHeightDots }
+  const fallback = registry.defaultProfile()
+
+  if (fallback) {
+    if (sameLabelSize(fallback.labelSize, base)) return null
+    if (tpl.overrides?.[sizeKey(fallback.labelSize.widthDots, fallback.labelSize.heightDots)]) {
+      return null
+    }
+  }
+
+  const match = findPrinterForSize(registry.profiles(), base)
+  return match && match.id !== fallback?.id ? match : null
 }
 
 /**
@@ -140,6 +193,34 @@ function labelSizeWarnings(tpl: LabelTemplate, target: JobLabelSize): PrintWarni
   }]
 }
 
+/** Which variable `serialize` refers to, or null when serialization wasn't asked for. */
+function serializeVariable(serialize: TemplatePrintRequest['serialize']): string | null {
+  if (serialize === undefined || serialize === false) return null
+  return serialize === true ? DEFAULT_SERIAL_VARIABLE : serialize
+}
+
+/**
+ * Warn when a request looks like it meant to serialize but didn't say so.
+ *
+ * This is how `serialize` stays discoverable without being inferred. Inferring it
+ * would silently change what existing callers print — five identical labels for a kit
+ * would become five different serial numbers — so the request is honoured as written
+ * and the caller is told what they could do instead.
+ */
+function serializeHints(tpl: LabelTemplate, data: TemplatePrintRequest): PrintWarning[] {
+  if (data.quantity <= 1 || serializeVariable(data.serialize) !== null) return []
+
+  const candidate = tpl.variables.find(v => v.name === DEFAULT_SERIAL_VARIABLE)
+  const value = candidate ? data.variables[candidate.name] : undefined
+  if (!candidate || value === undefined) return []
+
+  return [{
+    code: 'SERIAL_NOT_INCREMENTED',
+    message: `Printing ${data.quantity} identical labels, all with ${candidate.name} `
+      + `"${value}". Send "serialize": true to advance it across the copies instead.`
+  }]
+}
+
 function renderElements(
   tpl: LabelTemplate,
   variables: Record<string, string>,
@@ -182,6 +263,135 @@ function templateRef(tpl: StoredTemplate | PresetTemplate) {
   return { id: tpl.id, shortName: tpl.shortName ?? null, name: tpl.name }
 }
 
+/** What was serialized, without making the caller diff the values themselves. */
+function serializedSummary(variable: string, serials: string[]) {
+  return {
+    variable,
+    from: serials[0] ?? null,
+    to: serials[serials.length - 1] ?? null,
+    values: serials
+  }
+}
+
+interface SerializedPrintContext {
+  queue: PrintQueue | null
+  registry: PrinterRegistry | null
+  template: StoredTemplate | PresetTemplate
+  tpl: LabelTemplate
+  data: TemplatePrintRequest
+  selection: PrinterSelection
+  serialVariable: string
+  serials: string[]
+  projectedSize: JobLabelSize
+  printerSelection: { reason: PrinterSelectionReason; printerId: string | null }
+  warnings: PrintWarning[]
+}
+
+/**
+ * Print one label per serial, as separate jobs.
+ *
+ * One job per label rather than one job holding the whole run, matching what
+ * `POST /api/print/serial` already does. The reason is recoverability: serialized
+ * parts go into the world carrying an identifier, so when a run fails halfway you have
+ * to know exactly which serials physically came out. A single job for fifty labels
+ * that fails at label thirty cannot tell you that.
+ *
+ * For the same reason the loop **stops at the first failure** instead of pressing on.
+ * Continuing would spend more stock to produce a run with a hole in it.
+ */
+async function printSerialized(
+  res: ServerResponse,
+  ctx: SerializedPrintContext
+): Promise<void> {
+  const { queue, registry, tpl, data, selection, serialVariable, serials, projectedSize } = ctx
+
+  if (!queue) {
+    sendError(res, 'QUEUE_UNAVAILABLE', 'Serialized printing requires the job queue')
+    return
+  }
+  if (!await assertKnownPrinter(res, registry, selection.printerId)) return
+
+  const isLocal = selection.target === 'local' || !!selection.printerId?.startsWith(LOCAL_PRINTER_ID_PREFIX)
+  const jobs: Array<Record<string, unknown>> = []
+
+  for (const serial of serials) {
+    const variables = { ...data.variables, [serialVariable]: serial }
+    const requestData = {
+      elements: renderElements(tpl, variables, projectedSize),
+      copies: 1,
+      template: templateRef(ctx.template),
+      variables,
+      serial
+    }
+    // Each label is one copy: the values differ, so there is nothing for ^PQ to repeat.
+    const zplGen = (size: JobLabelSize): string =>
+      buildElementZpl(renderElements(tpl, variables, size), size, 1)
+
+    try {
+      if (isLocal) {
+        const { jobId, zpl } = queue.prepareExternal('label', requestData, zplGen, {
+          printerId: selection.printerId,
+          printerName: selection.printerName ?? LOCAL_PRINTER_NAME,
+          labelSize: selection.labelSize
+        })
+        jobs.push({ success: true, serial, jobId, queued: false, zpl })
+        continue
+      }
+
+      const result = await queue.submit('label', requestData, zplGen, {
+        printerId: selection.printerId,
+        printerName: selection.printerName,
+        labelSize: selection.labelSize
+      })
+      jobs.push({ success: result.success, serial, jobId: result.jobId, queued: result.queued })
+      if (!result.success) {
+        sendError(res, 'PRINT_FAILED', result.error ?? `Failed while printing ${serial}`, {
+          message: `Stopped at ${serial} to avoid spending more stock on a run with a gap. `
+            + `${jobs.filter(j => j.success).length} of ${serials.length} labels were submitted.`,
+          extra: serializedResponse(ctx, jobs, isLocal, false)
+        })
+        return
+      }
+    } catch (err) {
+      jobs.push({ success: false, serial, error: (err as Error).message })
+      sendError(res, 'RENDER_FAILED', (err as Error).message, {
+        extra: serializedResponse(ctx, jobs, isLocal, false)
+      })
+      return
+    }
+  }
+
+  json(res, serializedResponse(ctx, jobs, isLocal, true))
+}
+
+/** The serialized response body, shared by the success and partial-failure paths. */
+function serializedResponse(
+  ctx: SerializedPrintContext,
+  jobs: Array<Record<string, unknown>>,
+  isLocal: boolean,
+  success: boolean
+): Record<string, unknown> {
+  const printed = jobs.filter(j => j.success).length
+  return {
+    success,
+    serialized: {
+      ...serializedSummary(ctx.serialVariable, ctx.serials),
+      requested: ctx.serials.length,
+      submitted: printed
+    },
+    // No single `jobId`: there are as many jobs as labels, and which serial went with
+    // which job is the thing a caller needs.
+    jobs,
+    quantity: ctx.data.quantity,
+    target: isLocal ? 'local' : 'server',
+    labelSize: ctx.projectedSize,
+    printerId: ctx.printerSelection.printerId,
+    printerSelection: ctx.printerSelection,
+    template: templateRef(ctx.template),
+    warnings: ctx.warnings
+  }
+}
+
 /**
  * POST /api/print/template/:shortName
  *
@@ -214,35 +424,128 @@ export function templatePrintHandler(
     const tpl = asLabelTemplate(stored)
     if (!checkVariables(res, tpl, data.variables, data.allowMissingVariables)) return
 
-    const selection = selectionOf(data)
     const registry = getRegistry()
+    let selection = selectionOf(data)
+    let printerReason: PrinterSelectionReason = data.printerId
+      ? 'explicit'
+      : data.labelSize ? 'pinned-label-size' : 'default'
 
-    // Resolved here as well as inside the queue so the warning can be computed
-    // before anything prints. A read of the same rule, not a second copy of it.
+    // Auto-routing only when the caller expressed no preference at all. Naming a
+    // printer or pinning a labelSize is an explicit instruction and outranks being
+    // clever — someone who pinned 406×203 wants 406×203, whatever stock is loaded.
+    if (printerReason === 'default') {
+      const matched = printerForTemplate(registry, tpl)
+      if (matched) {
+        selection = { ...selection, printerId: matched.id, printerName: matched.name }
+        printerReason = 'label-size-match'
+      }
+    }
+
+    // Resolved here as well as inside the queue so warnings can be computed before
+    // anything prints. A read of the same rule, not a second copy of it — and it has
+    // to happen after auto-routing, since the chosen printer decides the geometry.
     const projectedSize = resolveJobLabelSize(registry, {
       printerId: selection.printerId,
       labelSize: selection.labelSize
     })
-    const warnings = labelSizeWarnings(tpl, projectedSize)
+
+    const serialVariable = serializeVariable(data.serialize)
+    const warnings = [
+      ...labelSizeWarnings(tpl, projectedSize),
+      ...serializeHints(tpl, data)
+    ]
+    const printerSelection = {
+      reason: printerReason,
+      printerId: selection.printerId ?? registry?.defaultProfile()?.id ?? null
+    }
+
+    // Distinct values to print, one label each. Without serialization that is a
+    // single label printed `quantity` times via one ^PQ, which is cheaper and what
+    // the printer is built for.
+    let serials: string[] | null = null
+    if (serialVariable) {
+      if (!tpl.variables.some(v => v.name === serialVariable)) {
+        sendError(res, 'SERIALIZE_INVALID', `'${serialVariable}' is not a variable of this template`, {
+          message: `This template accepts: ${tpl.variables.map(v => v.name).join(', ') || '(none)'}.`,
+          extra: { serialize: serialVariable, accepts: tpl.variables.map(v => v.name) }
+        })
+        return
+      }
+      const start = data.variables[serialVariable]
+      if (start === undefined) {
+        sendError(res, 'SERIALIZE_INVALID', `No value given for '${serialVariable}' to count from`, {
+          message: `Send the first serial as variables.${serialVariable}, e.g. "NRG-001".`,
+          extra: { serialize: serialVariable }
+        })
+        return
+      }
+      serials = serialSequence(start, data.quantity)
+      if (!serials) {
+        sendError(res, 'SERIALIZE_INVALID', `'${start}' has no trailing number to advance`, {
+          message: `${serialVariable} must end in digits so it can be counted up — `
+            + '"NRG-001" becomes NRG-002, NRG-003. Prefix and zero-padding are preserved.',
+          extra: { serialize: serialVariable, value: start }
+        })
+        return
+      }
+    }
 
     if (data.dryRun) {
       try {
-        const elements = renderElements(tpl, data.variables, projectedSize)
-        json(res, {
+        const shared = {
           success: true,
           dryRun: true,
-          zpl: buildElementZpl(elements, projectedSize, data.quantity),
-          elements,
           labelSize: projectedSize,
           quantity: data.quantity,
           template: templateRef(stored),
+          printerSelection,
           warnings
+        }
+        if (serials) {
+          json(res, {
+            ...shared,
+            serialized: serializedSummary(serialVariable!, serials),
+            // One label per serial, each a single copy — the whole point is that they
+            // differ, so there is no ^PQ to share between them.
+            labels: serials.map(serial => ({
+              serial,
+              zpl: buildElementZpl(
+                renderElements(tpl, { ...data.variables, [serialVariable!]: serial }, projectedSize),
+                projectedSize,
+                1
+              )
+            }))
+          })
+          return
+        }
+        const elements = renderElements(tpl, data.variables, projectedSize)
+        json(res, {
+          ...shared,
+          zpl: buildElementZpl(elements, projectedSize, data.quantity),
+          elements
         })
       } catch (err) {
         sendError(res, 'RENDER_FAILED', (err as Error).message, {
           extra: { template: templateRef(stored) }
         })
       }
+      return
+    }
+
+    if (serials) {
+      await printSerialized(res, {
+        queue: getQueue(),
+        registry,
+        template: stored,
+        tpl,
+        data,
+        selection,
+        serialVariable: serialVariable!,
+        serials,
+        projectedSize,
+        printerSelection,
+        warnings
+      })
       return
     }
 
@@ -275,6 +578,7 @@ export function templatePrintHandler(
       {
         quantity: data.quantity,
         template: templateRef(stored),
+        printerSelection,
         warnings
       }
     )

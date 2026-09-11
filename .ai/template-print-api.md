@@ -113,6 +113,38 @@ mismatch against the template's design size returns a `LABEL_SIZE_MISMATCH` warn
 error. A template carrying an override for the target size has been considered at that size and
 stays quiet.
 
+**So the printer is chosen to fit the template**, when the caller expressed no preference. The
+failure that forced this was invisible until the label came out: a 3×5 template with no `printerId`
+went to the default printer holding 2×1 stock and printed cropped and unreadable, with nothing in
+the response flagging it as wrong. The server already knows what stock each printer holds, so it
+may as well use that.
+
+Explicit beats clever: naming a `printerId` or pinning a `labelSize` disables routing entirely.
+Routing is also skipped when the template has a per-size override for the default printer's stock,
+because that means the author laid it out for that size on purpose. When nothing matches, the print
+still happens on the default with the warning — refusing would be worse than printing scaled.
+
+Readiness is deliberately not probed before routing. An unreachable but correctly-loaded printer
+queues the job and prints on the right stock when it returns, which beats printing immediately on
+the wrong stock; and probing would add a discovery round-trip to every print.
+
+## Serialization is opt-in
+
+`serialize` advances one variable across the copies. It is not inferred from `quantity > 1` plus a
+variable that happens to be named `serial`, because that would change what existing callers print —
+five identical labels for a kit would silently become five different serial numbers. A
+`SERIAL_NOT_INCREMENTED` warning makes the feature discoverable without taking that risk.
+
+The first value printed is the one the caller sent, and its prefix and zero-padding are derived from
+it, so there is no separate format or width option. Padding **widens** rather than wrapping:
+`NRG-999` becomes `NRG-1000`, never `NRG-000`, because reissuing a serial puts two different parts
+into the world under one identifier.
+
+Each label is its own job, matching `POST /api/print/serial`. Serialized parts carry an identifier,
+so a run that fails halfway has to report exactly which serials physically came out — a single job
+covering fifty labels cannot. For the same reason the run stops at the first failure instead of
+spending more stock on a sequence with a gap in it.
+
 ## Security posture
 
 With no `ZEBRA_API_KEY` — the default — this endpoint lets any page the operator visits print up

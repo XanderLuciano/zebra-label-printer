@@ -339,6 +339,7 @@ export const TEMPLATE_PRINT_CONTROL_KEYS = [
   'copies',
   'dryRun',
   'allowMissingVariables',
+  'serialize',
   'target',
   'printerId',
   'printerName',
@@ -392,6 +393,29 @@ function foldFlatVariables(body: unknown): unknown {
   return { ...control, variables }
 }
 
+/** The default variable `serialize: true` advances. */
+export const DEFAULT_SERIAL_VARIABLE = 'serial'
+
+/**
+ * Which variable, if any, advances across the copies.
+ *
+ * Deliberately opt-in rather than inferred from `quantity > 1` plus a variable that
+ * happens to be called `serial`. Inferring it would change what existing callers
+ * print — someone running off five identical labels for a kit would silently start
+ * getting five different serial numbers. The handler warns when a request looks like
+ * it *meant* to serialize, which makes the feature discoverable without that risk.
+ */
+const serializeSchema = z.union([
+  z.boolean(),
+  z.string().regex(/^[A-Za-z0-9_]+$/, 'Name a variable to serialize, e.g. "serial"')
+]).describe(
+  'Advance a variable across the copies instead of printing the same label `quantity` times. '
+  + `true serializes the variable named "${DEFAULT_SERIAL_VARIABLE}"; a string names the variable to use. `
+  + 'The value you send for that variable is the first one printed, and its prefix and zero-padding '
+  + 'are preserved: "NRG-001" with quantity 3 prints NRG-001, NRG-002, NRG-003. Each copy becomes '
+  + 'its own job, so print history records which serials physically went out.'
+)
+
 /**
  * POST /api/print/template/:shortName
  *
@@ -414,6 +438,7 @@ export const templatePrintSchema = z.preprocess(
       .describe('Render and return the ZPL without printing or recording a job. Use this while wiring up an integration.'),
     allowMissingVariables: z.boolean().optional().default(false)
       .describe('Let variables the template\'s layout references be absent, rendering them blank. Off by default because a missing value leaves a gap the caller cannot see. A variable\'s sample value is never substituted either way.'),
+    serialize: serializeSchema.optional(),
     ...printerSelectionFields
   }).strict()
     .refine(

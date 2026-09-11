@@ -380,12 +380,36 @@ the default printer, at that printer's configured stock.
 |-------|---------|-------|
 | `variables` | `{}` | Values by name. Numbers and booleans are stringified for you |
 | `quantity` | `1` | `copies` is accepted as a synonym |
+| `serialize` | — | Advance a variable across the copies ([below](#serial-numbers)) |
 | `dryRun` | `false` | Render and return the ZPL without printing or recording a job |
 | `allowMissingVariables` | `false` | Print blanks instead of rejecting absent variables |
 
 `printerId`, `printerName`, `labelSize`, and `target` behave exactly as on the other print
 endpoints — see [Printers and Label Sizes](#printers-and-label-sizes). **`/api/docs` is the
 authoritative reference** for types, limits, and responses.
+
+#### The right printer is picked for you
+
+If you name neither `printerId` nor `labelSize`, the server routes the job to a configured printer
+**loaded with the stock the template was designed for**. A 3×5 template no longer prints scaled
+down onto 2×1 stock just because that's what the default printer holds.
+
+`printerSelection.reason` in the response tells you which rule applied:
+
+| `reason` | Meaning |
+|---|---|
+| `label-size-match` | Routed to a printer holding the template's design size |
+| `default` | The default printer — either it already fits, or nothing else holds the right stock |
+| `explicit` | You named a `printerId`, so no routing happened |
+| `pinned-label-size` | You pinned `labelSize`, so the printer's own stock wasn't consulted |
+
+Naming a printer or pinning a size is an explicit instruction and always wins. Routing is also
+skipped when the template carries a per-size override for the default printer's stock, since that
+means the author laid it out for that size deliberately.
+
+If no configured printer holds the right stock you still get a print — on the default printer,
+scaled, with a `LABEL_SIZE_MISMATCH` warning. Refusing outright would be worse than printing
+something. Register each printer's real label stock in **Settings → Printers** for this to work.
 
 **Flat payloads work too**, for services whose payload shape you can't change. Any top-level key
 that isn't one of the fields above is read as a variable:
@@ -412,6 +436,54 @@ const res = await fetch('http://printer.local:3420/api/print/template/part-2x1',
 const result = await res.json()
 if (!res.ok) throw new Error(`${result.code}: ${result.error}`)
 ```
+
+#### Serial numbers
+
+Set `serialize` to advance a variable across the copies instead of printing the same label
+`quantity` times:
+
+```bash
+curl -X POST http://localhost:3420/api/print/template/part-2x1 \
+  -H "Content-Type: application/json" \
+  -d '{
+    "variables": { "partNumber": "135853-002", "rev": "C", "vendor": "NRG", "serial": "NRG-001" },
+    "quantity": 5,
+    "serialize": true
+  }'
+```
+
+That prints `NRG-001` through `NRG-005`. The value you send is the **first** one printed, and its
+prefix and zero-padding come from what you sent — `NRG-001` counts in three digits, `NRG-1` in one.
+Padding widens rather than wrapping, so `NRG-999` becomes `NRG-1000` and never reissues `NRG-000`.
+
+`serialize: true` advances the variable named `serial`. Pass a name instead
+(`"serialize": "assetId"`) for any other variable.
+
+**It's opt-in on purpose.** Inferring it from `quantity > 1` would silently turn five identical
+kit labels into five different serial numbers for everyone already calling this endpoint. When a
+request looks like it meant to serialize, the response says so in `warnings` rather than guessing:
+
+```json
+{ "code": "SERIAL_NOT_INCREMENTED",
+  "message": "Printing 5 identical labels, all with serial \"NRG-001\". Send \"serialize\": true to advance it across the copies instead." }
+```
+
+Each label becomes **its own job**, so the response carries `jobs[]` and `serialized` instead of a
+single `jobId`:
+
+```json
+{
+  "success": true,
+  "serialized": { "variable": "serial", "from": "NRG-001", "to": "NRG-005",
+                  "values": ["NRG-001", "..."], "requested": 5, "submitted": 5 },
+  "jobs": [ { "success": true, "serial": "NRG-001", "jobId": "job_...", "queued": false } ]
+}
+```
+
+One job per label because serialized parts carry an identifier into the world: when a run fails
+you have to know exactly which serials came out. For the same reason the run **stops at the first
+failure** rather than spending more stock to produce a sequence with a hole in it — check
+`serialized.submitted` and `jobs[]` to see how far it got.
 
 > [!WARNING]
 > With no `ZEBRA_API_KEY` set, this endpoint is unauthenticated — **any web page your operators

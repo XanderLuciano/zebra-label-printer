@@ -40,6 +40,8 @@ src/
   zpl.ts                → ZPLBuilder fluent API + convenience functions + unit helpers
   zpl-fonts.ts          → Measured ^A font metrics (advance widths, cap heights, magnification)
   template-engine.ts    → Template model, resolveTemplate(), substitute(), rotation geometry
+  label-size-match.ts   → sameLabelSize(), findPrinterForSize(): which printer holds which stock
+  serial.ts             → Serial sequences for multi-copy prints (NRG-001 → NRG-002 …)
   label.ts              → High-level label templates (shipping, asset, item, QR)
   schemas.ts            → Zod validation schemas for all API endpoints
   openapi.ts            → OpenAPI 3.1 spec: paths, prose, responses + Swagger UI HTML
@@ -461,6 +463,20 @@ changing any of this.** What you need to know to navigate the code:
   endpoint uses. Printer selection, the local/WebUSB handoff, label-size snapshots and queueing
   are not reimplemented. Jobs are recorded as `jobType: 'label'` with resolved `elements`,
   because that is what `PrintQueue.rebuildZpl()` can reconstruct.
+- **Printer auto-routing.** With neither `printerId` nor `labelSize` given,
+  `printerForTemplate()` routes to a configured printer holding the template's design size,
+  via the shared `findPrinterForSize()` in `src/label-size-match.ts`. It returns null — keep
+  the default — when the default already fits, when the template has an override for the
+  default's size, or when nothing matches. The last case prints scaled with a
+  `LABEL_SIZE_MISMATCH` warning rather than failing. Readiness is deliberately *not* probed:
+  an unreachable-but-correct printer queues the job and prints on the right stock later, which
+  beats printing now on the wrong stock, and probing would add a discovery round-trip per print.
+- **Serialization** (`serialize`) advances one variable across the copies, one job per label,
+  matching what `POST /api/print/serial` already does — serialized parts carry an identifier
+  into the world, so a failed run must say exactly which serials came out. The run stops at the
+  first failure. It is opt-in because inferring it from `quantity > 1` would silently turn
+  identical kit labels into distinct serials for existing callers; a `SERIAL_NOT_INCREMENTED`
+  warning makes it discoverable instead.
 - The endpoint is CORS-open and, with no `ZEBRA_API_KEY`, unauthenticated. `ZEBRA_CORS_ORIGINS`
   and `ZEBRA_PRINT_RATE_LIMIT` bound the damage; neither replaces an API key.
 
@@ -547,6 +563,7 @@ step and made an up-to-date install report that an update was available.
 
 | Version | Date | Changes |
 |---------|------|---------|
+| v0.7.0 | 2026-09-04 | **Printer auto-routing**: a template print that names neither `printerId` nor `labelSize` now goes to a configured printer loaded with the stock the template was designed for, so a 3×5 template no longer prints scaled and cropped onto 2×1 stock. `printerSelection.reason` on every response says which rule applied; explicit `printerId`/`labelSize`, or a per-size override for the default printer's stock, disable the routing. No match still prints on the default with `LABEL_SIZE_MISMATCH`. **Serial numbers**: `serialize` advances one variable across the copies (`NRG-001` → `NRG-005`), one job per label so history records which serials went out, stopping at the first failure. Opt-in, with a `SERIAL_NOT_INCREMENTED` warning making it discoverable — inferring it would have silently changed what existing callers print. `label-size-match.ts` moved from `web/app/utils/` into `src/`, so the print page's printer suggestion and the API's routing use one implementation |
 | v0.6.0 | 2026-09-04 | **Template print webhooks**: `POST /api/print/template/{shortName}` prints a saved template from a JSON payload of its variables plus a quantity, with `GET /api/templates/{shortName}/schema` for variable discovery. Template short names as a public identifier (migration `0005`), unique across user templates *and* code-defined presets. Standardized error envelope adding a machine-readable `code` alongside the existing `error` string. Configurable CORS origins (`ZEBRA_CORS_ORIGINS`), preflight caching, and a per-address rate limit on the print webhooks (`ZEBRA_PRINT_RATE_LIMIT`). `/api/docs` request schemas are now **generated from the Zod schemas**, so a documented limit is the enforced one; `PUT /api/settings` and `PUT /api/label-size` gained the Zod validation they never had. The template engine and ZPL font metrics moved from `web/app/composables/` into `src/`, so the designer preview and a webhook print resolve templates through one implementation. **Fixes**: `POST /api/print/zpl` hung forever on a JSON body (it read the request stream twice); `rebuildZpl()` dropped `copies`, so a queued multi-copy job printed a single label; the OpenAPI spec version was hardcoded and had drifted from package.json |
 | v0.4.0 | 2026-08-28 | Per-printer configuration: `printers` table, `PrinterRegistry`, printer CRUD API, `printerId` on print requests, per-printer queueing, multi-device WebUSB, unified printer list in Settings. Hot-plug detection via `lpinfo` device enumeration, with a health monitor recording connect/disconnect transitions. Fixed timestamp defaults storing a string literal instead of a date (migration `0004`). CI now runs the whole test suite and covers the web app |
 | v0.3.0 | 2026-04-28 | Not recorded at the time — see `git log v0.2.0..v0.3.0` |

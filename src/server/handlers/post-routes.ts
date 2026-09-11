@@ -92,6 +92,31 @@ function isLocalPrint(selection: PrinterSelection): boolean {
  *   `target: 'local'`, persists the job and returns `zpl` for the caller to
  *   transmit over WebUSB; the caller then reports back via /api/jobs/:id/result.
  */
+/**
+ * Reject a named printer that isn't configured, rather than printing elsewhere.
+ *
+ * Shared with the template webhook's serialized path, because the reasoning is the
+ * non-obvious part: the point of naming a printer is that the label lands on the
+ * right stock, so a silent fallback to the default wastes a label at best.
+ *
+ * @returns true when the request may proceed; writes a 404 and returns false otherwise.
+ */
+export async function assertKnownPrinter(
+  res: ServerResponse,
+  registry: PrinterRegistry | null,
+  printerId?: string | null
+): Promise<boolean> {
+  if (!registry || !printerId) return true
+  const resolved = await registry.resolve(printerId)
+  if (isUnresolved(resolved) && resolved.reason === 'unknown-printer') {
+    sendError(res, 'PRINTER_NOT_FOUND', unresolvedMessage(resolved.reason), {
+      extra: { printerId }
+    })
+    return false
+  }
+  return true
+}
+
 export async function dispatchPrint(
   res: ServerResponse,
   printer: Printer | null,
@@ -131,17 +156,7 @@ export async function dispatchPrint(
       return
     }
 
-    // Reject an unknown printer rather than quietly printing somewhere else — the
-    // whole point of naming a printer is that the label lands on the right stock.
-    if (registry && selection.printerId) {
-      const resolved = await registry.resolve(selection.printerId)
-      if (isUnresolved(resolved) && resolved.reason === 'unknown-printer') {
-        sendError(res, 'PRINTER_NOT_FOUND', unresolvedMessage(resolved.reason), {
-          extra: { printerId: selection.printerId }
-        })
-        return
-      }
-    }
+    if (!await assertKnownPrinter(res, registry, selection.printerId)) return
 
     if (queue) {
       const result = await queue.submit(jobType, requestData, zplGen, {

@@ -635,10 +635,19 @@ export const OPENAPI_SPEC = {
           'error rather than a blank field on a physical label. Variables the layout ' +
           'references must all be supplied unless `allowMissingVariables` is set; a ' +
           'variable\'s sample value is never substituted on a real print.\n\n' +
+          '**Printer routing.** When the request names neither `printerId` nor ' +
+          '`labelSize`, the server picks a configured printer loaded with the stock the ' +
+          'template was designed for, so a 3×5 template does not print scaled onto 2×1 ' +
+          'stock. `printerSelection.reason` says which rule applied. Naming a printer or ' +
+          'pinning a `labelSize` is an explicit instruction and disables the routing.\n\n' +
           '**Label size** comes from the target printer\'s saved configuration, not the ' +
           'template\'s design size, and the layout is scaled to fit. When they differ and ' +
           'the template has no override for the target size, a `LABEL_SIZE_MISMATCH` ' +
           'warning is returned alongside the success.\n\n' +
+          '**Serial numbers.** `serialize` advances a variable across the copies instead ' +
+          'of printing the same label `quantity` times — see the field description. Each ' +
+          'copy becomes its own job, so the response carries `jobs[]` and `serialized` ' +
+          'instead of a single `jobId`, and print history records which serials went out.\n\n' +
           '**CORS** is open by default; set `ZEBRA_CORS_ORIGINS` to restrict it. This ' +
           'endpoint is rate limited per client address — see `ZEBRA_PRINT_RATE_LIMIT`. ' +
           'On an install with no `ZEBRA_API_KEY` it is unauthenticated, which means any ' +
@@ -668,6 +677,14 @@ export const OPENAPI_SPEC = {
                   summary: 'Named printer',
                   value: { variables: { assetId: 'NRG-001' }, printerId: 'prt_a1b2c3' }
                 },
+                serialized: {
+                  summary: 'Five labels, serial advancing NRG-001…NRG-005',
+                  value: {
+                    variables: { partNumber: '135853-002', rev: 'C', vendor: 'NRG', serial: 'NRG-001' },
+                    quantity: 5,
+                    serialize: true
+                  }
+                },
                 dryRun: {
                   summary: 'Render only — nothing prints, no job recorded',
                   value: { variables: { partNumber: '135853-002' }, allowMissingVariables: true, dryRun: true }
@@ -684,6 +701,7 @@ export const OPENAPI_SPEC = {
                 schema: {
                   oneOf: [
                     { $ref: '#/components/schemas/TemplatePrintResult' },
+                    { $ref: '#/components/schemas/TemplateSerializedResult' },
                     { $ref: '#/components/schemas/TemplateDryRunResult' }
                   ]
                 }
@@ -1487,6 +1505,77 @@ export const OPENAPI_SPEC = {
           message: { type: 'string' }
         }
       },
+      PrinterSelection: {
+        type: 'object',
+        description: 'Which printer this print went to, and why. Useful when the server routed the job somewhere other than the default.',
+        properties: {
+          reason: {
+            type: 'string',
+            enum: ['explicit', 'pinned-label-size', 'label-size-match', 'default'],
+            description:
+              '`explicit` — the request named a printerId. '
+              + '`pinned-label-size` — the request pinned labelSize, so the printer\'s own stock was not consulted. '
+              + '`label-size-match` — routed to a printer loaded with the stock this template was designed for. '
+              + '`default` — the default printer, either because it already fits or because no configured printer holds the right stock.'
+          },
+          printerId: { type: 'string', nullable: true }
+        }
+      },
+      SerializedRun: {
+        type: 'object',
+        description: 'The sequence of values printed, when `serialize` was used.',
+        properties: {
+          variable: { type: 'string', example: 'serial' },
+          from: { type: 'string', nullable: true, example: 'NRG-001' },
+          to: { type: 'string', nullable: true, example: 'NRG-005' },
+          values: { type: 'array', items: { type: 'string' } },
+          requested: { type: 'integer', description: 'Labels asked for.' },
+          submitted: {
+            type: 'integer',
+            description: 'Labels actually submitted. Lower than `requested` when the run stopped early, which it does at the first failure rather than producing a run with a gap in it.'
+          }
+        }
+      },
+      TemplateSerializedResult: {
+        type: 'object',
+        description:
+          'Returned when `serialize` was used. There is no single `jobId`: each label is '
+          + 'its own job, so print history can record which serials physically went out. '
+          + 'On a partial failure this same body is returned with HTTP 500 and '
+          + '`code: PRINT_FAILED`; read `jobs[]` to see exactly how far the run got.',
+        properties: {
+          success: { type: 'boolean' },
+          serialized: { $ref: '#/components/schemas/SerializedRun' },
+          jobs: {
+            type: 'array',
+            items: {
+              type: 'object',
+              properties: {
+                success: { type: 'boolean' },
+                serial: { type: 'string', example: 'NRG-001' },
+                jobId: { type: 'string' },
+                queued: { type: 'boolean' },
+                zpl: { type: 'string', description: 'Present only for a local (WebUSB) target.' },
+                error: { type: 'string' }
+              }
+            }
+          },
+          quantity: { type: 'integer' },
+          target: { type: 'string', enum: ['server', 'local'] },
+          labelSize: {
+            type: 'object',
+            properties: {
+              widthDots: { type: 'integer' },
+              heightDots: { type: 'integer' },
+              dpi: { type: 'integer' }
+            }
+          },
+          printerId: { type: 'string', nullable: true },
+          printerSelection: { $ref: '#/components/schemas/PrinterSelection' },
+          template: { $ref: '#/components/schemas/TemplateRef' },
+          warnings: { type: 'array', items: { $ref: '#/components/schemas/PrintWarning' } }
+        }
+      },
       TemplatePrintResult: {
         type: 'object',
         description:
@@ -1495,6 +1584,7 @@ export const OPENAPI_SPEC = {
           'persisted for the background processor. Poll GET /api/jobs/{jobId} to find out ' +
           'whether a label physically came out.',
         properties: {
+          printerSelection: { $ref: '#/components/schemas/PrinterSelection' },
           success: { const: true },
           jobId: { type: 'string', example: 'job_1788561359824_u1fnd9' },
           queued: { type: 'boolean' },
@@ -1519,12 +1609,28 @@ export const OPENAPI_SPEC = {
       },
       TemplateDryRunResult: {
         type: 'object',
-        description: 'Returned when `dryRun` is set. Nothing printed, no job recorded.',
+        description:
+          'Returned when `dryRun` is set. Nothing printed, no job recorded. With '
+          + '`serialize`, `zpl`/`elements` are replaced by `serialized` plus a `labels[]` '
+          + 'entry per serial, since the copies differ.',
         properties: {
           success: { const: true },
           dryRun: { const: true },
-          zpl: { type: 'string' },
+          zpl: { type: 'string', description: 'Absent when `serialize` was used.' },
           elements: { type: 'array', items: { $ref: '#/components/schemas/LabelElement' } },
+          serialized: { $ref: '#/components/schemas/SerializedRun' },
+          labels: {
+            type: 'array',
+            description: 'One entry per serial, present only with `serialize`.',
+            items: {
+              type: 'object',
+              properties: {
+                serial: { type: 'string' },
+                zpl: { type: 'string' }
+              }
+            }
+          },
+          printerSelection: { $ref: '#/components/schemas/PrinterSelection' },
           labelSize: {
             type: 'object',
             properties: {
@@ -1552,9 +1658,10 @@ export const OPENAPI_SPEC = {
             type: 'string',
             enum: [
               'INVALID_JSON', 'VALIDATION_FAILED', 'UNKNOWN_VARIABLES', 'MISSING_VARIABLES',
-              'RENDER_FAILED', 'BAD_REQUEST', 'UNAUTHORIZED', 'PRESET_IMMUTABLE',
-              'TEMPLATE_NOT_FOUND', 'PRINTER_NOT_FOUND', 'NOT_FOUND', 'SHORT_NAME_TAKEN',
-              'RATE_LIMITED', 'PRINT_FAILED', 'INTERNAL_ERROR', 'NO_PRINTER', 'QUEUE_UNAVAILABLE'
+              'SERIALIZE_INVALID', 'RENDER_FAILED', 'BAD_REQUEST', 'UNAUTHORIZED',
+              'PRESET_IMMUTABLE', 'TEMPLATE_NOT_FOUND', 'PRINTER_NOT_FOUND', 'NOT_FOUND',
+              'SHORT_NAME_TAKEN', 'RATE_LIMITED', 'PRINT_FAILED', 'INTERNAL_ERROR',
+              'NO_PRINTER', 'QUEUE_UNAVAILABLE'
             ]
           },
           message: { type: 'string', description: 'Longer explanation, when there is more to say than `error`.' },

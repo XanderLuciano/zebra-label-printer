@@ -6,7 +6,7 @@
  * right stock, or lets a 3×5 label print silently cropped on a 2×1 printer.
  */
 import { describe, it, expect } from 'vitest'
-import { sameLabelSize, findPrinterForSize } from '../../web/app/utils/label-size-match'
+import { sameLabelSize, findPrinterForSize } from '../../src/label-size-match'
 
 const SIZE_2X1 = { widthDots: 406, heightDots: 203 }
 const SIZE_3X5 = { widthDots: 609, heightDots: 1015 }
@@ -104,5 +104,34 @@ describe('findPrinterForSize', () => {
 
   it('handles an empty printer list', () => {
     expect(findPrinterForSize([], SIZE_3X5)).toBeNull()
+  })
+})
+
+describe('findPrinterForSize — optional readiness', () => {
+  const SIZE = { widthDots: 406, heightDots: 203 }
+
+  /** A candidate with `ready` left off, as the server passes them. */
+  const serverProfile = (id: string, isDefault = false) => ({
+    id, connection: 'server' as const, isDefault, labelSize: SIZE
+  })
+
+  it('treats a printer with no `ready` field as eligible', () => {
+    // The webhook omits it on purpose: an unreachable printer queues the job and
+    // prints on the right stock later, which beats printing now on the wrong stock.
+    expect(findPrinterForSize([serverProfile('p1')], SIZE)?.id).toBe('p1')
+  })
+
+  it('still excludes a printer explicitly marked not ready', () => {
+    // The web print page passes `ready` because it is offering the operator something
+    // to use immediately.
+    const printers = [
+      { ...serverProfile('offline'), ready: false },
+      { ...serverProfile('online'), ready: true }
+    ]
+    expect(findPrinterForSize(printers, SIZE)?.id).toBe('online')
+  })
+
+  it('returns null when every match is explicitly not ready', () => {
+    expect(findPrinterForSize([{ ...serverProfile('offline'), ready: false }], SIZE)).toBeNull()
   })
 })

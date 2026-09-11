@@ -141,6 +141,39 @@ describe('templatePrintSchema — variable values', () => {
   })
 })
 
+describe('templatePrintSchema — serialize', () => {
+  it('accepts true, meaning the variable named "serial"', () => {
+    expect(parse({ serialize: true, quantity: 3 }).serialize).toBe(true)
+  })
+
+  it('accepts a variable name', () => {
+    expect(parse({ serialize: 'assetId' }).serialize).toBe('assetId')
+  })
+
+  it('accepts false as an explicit opt-out', () => {
+    expect(parse({ serialize: false }).serialize).toBe(false)
+  })
+
+  it('is absent by default, so behaviour is unchanged unless asked for', () => {
+    // Inferring serialization from quantity > 1 plus a variable called `serial` would
+    // silently turn five identical kit labels into five different serial numbers.
+    expect(parse({ quantity: 5 })).not.toHaveProperty('serialize')
+  })
+
+  it('rejects a name no template variable could have', () => {
+    expect(issues({ serialize: 'bad-name' })[0]?.message).toMatch(/Name a variable/)
+    expect(templatePrintSchema.safeParse({ serialize: 'has space' }).success).toBe(false)
+    expect(templatePrintSchema.safeParse({ serialize: 123 }).success).toBe(false)
+    expect(templatePrintSchema.safeParse({ serialize: [] }).success).toBe(false)
+  })
+
+  it('is a control key, so the flat form never reads it as a variable', () => {
+    const data = parse({ partNumber: 'X', serialize: true })
+    expect(data.serialize).toBe(true)
+    expect(data.variables).toEqual({ partNumber: 'X' })
+  })
+})
+
 describe('templatePrintSchema — quantity', () => {
   it('accepts `copies` as a synonym', () => {
     expect(parse({ copies: 7 }).quantity).toBe(7)
