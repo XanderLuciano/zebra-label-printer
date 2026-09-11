@@ -15,6 +15,7 @@
 
 import { generateRequestSchemas } from './openapi-zod'
 import { CURRENT_VERSION } from './updater'
+import { PRINTER_SELECTION_REASONS } from './constants'
 
 /** Generated once at module load, not per request. */
 const GENERATED_REQUEST_SCHEMAS = generateRequestSchemas()
@@ -1507,18 +1508,36 @@ export const OPENAPI_SPEC = {
       },
       PrinterSelection: {
         type: 'object',
-        description: 'Which printer this print went to, and why. Useful when the server routed the job somewhere other than the default.',
+        description:
+          'Which printer this print went to, and why. Read `message` to explain it to a '
+          + 'person and `reason` to branch on it.',
         properties: {
           reason: {
+            // Imported rather than restated, so the documented set is the one the server
+            // can actually send.
             type: 'string',
-            enum: ['explicit', 'pinned-label-size', 'label-size-match', 'default'],
+            enum: [...PRINTER_SELECTION_REASONS],
             description:
-              '`explicit` — the request named a printerId. '
-              + '`pinned-label-size` — the request pinned labelSize, so the printer\'s own stock was not consulted. '
-              + '`label-size-match` — routed to a printer loaded with the stock this template was designed for. '
-              + '`default` — the default printer, either because it already fits or because no configured printer holds the right stock.'
+              '`explicit-printer` — the request named a printerId, so routing was skipped. '
+              + '`explicit-label-size` — the request gave a labelSize, so the printer\'s own '
+              + 'configured stock was not consulted and routing was skipped. '
+              + '`label-size-match` — routed to a printer loaded with the stock this template '
+              + 'was designed for. '
+              + '`default` — the default printer, either because it already holds the right '
+              + 'stock or because no configured printer does (in which case the layout was '
+              + 'scaled and a LABEL_SIZE_MISMATCH warning accompanies it).'
           },
-          printerId: { type: 'string', nullable: true }
+          printerId: { type: 'string', nullable: true },
+          printerName: {
+            type: 'string',
+            nullable: true,
+            example: 'Bench GK420d',
+            description: 'Human-readable printer name, for display. Null when no printer is configured.'
+          },
+          message: {
+            type: 'string',
+            description: 'Plain-language account of how the printer was chosen and what to change to affect it. Written for humans and may be reworded; branch on `reason`.'
+          }
         }
       },
       SerializedRun: {

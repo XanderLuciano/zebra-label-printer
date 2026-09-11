@@ -19,7 +19,7 @@ import { REQUEST_SCHEMAS, generateRequestSchemas } from '../../src/openapi-zod'
 import { API_ERROR_CODES, statusForCode } from '../../src/server/errors'
 import { PARAMETERISED_ROUTES } from '../../src/server/router'
 import { templateShortNameSchema, TEMPLATE_PRINT_CONTROL_KEYS } from '../../src/schemas'
-import { MAX_COPIES } from '../../src/constants'
+import { MAX_COPIES, PRINTER_SELECTION_REASONS } from '../../src/constants'
 
 const spec = OPENAPI_SPEC as any
 const schemas = spec.components.schemas
@@ -173,6 +173,11 @@ describe('error codes', () => {
   it('lists exactly the codes the server can send', () => {
     expect([...(schemas.ApiError.properties.code.enum as string[])].sort())
       .toEqual([...API_ERROR_CODES].sort())
+  })
+
+  it('lists exactly the printer-selection reasons the server can send', () => {
+    expect([...(schemas.PrinterSelection.properties.reason.enum as string[])].sort())
+      .toEqual([...PRINTER_SELECTION_REASONS].sort())
   })
 
   it('declares each documented response under the status that code maps to', () => {

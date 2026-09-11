@@ -237,6 +237,27 @@ export const RESERVED_TEMPLATE_SHORT_NAMES: readonly string[] = [
 ]
 
 /**
+ * Why a template print went to the printer it did.
+ *
+ * Named in parallel on purpose: `explicit-printer` and `explicit-label-size` both mean
+ * "the caller decided", which the earlier `pinned-label-size` failed to convey to the
+ * first integrator who saw it. The response carries a human-readable `message`
+ * alongside the code, for the same reason.
+ */
+export const PRINTER_SELECTION_REASONS = [
+  /** The request named a `printerId`. */
+  'explicit-printer',
+  /** The request gave a `labelSize`, so the printer's own stock was not consulted. */
+  'explicit-label-size',
+  /** Routed to a printer loaded with the stock this template was designed for. */
+  'label-size-match',
+  /** The default printer: it already fits, or nothing else holds the right stock. */
+  'default'
+] as const
+
+export type PrinterSelectionReason = typeof PRINTER_SELECTION_REASONS[number]
+
+/**
  * Most copies a single print request may ask for.
  *
  * Copies are emitted as one `^PQ` command, so the printer repeats the label from

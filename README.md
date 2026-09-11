@@ -394,14 +394,27 @@ If you name neither `printerId` nor `labelSize`, the server routes the job to a 
 **loaded with the stock the template was designed for**. A 3×5 template no longer prints scaled
 down onto 2×1 stock just because that's what the default printer holds.
 
-`printerSelection.reason` in the response tells you which rule applied:
+`printerSelection` in the response tells you what happened, in both machine- and
+human-readable form:
+
+```json
+"printerSelection": {
+  "reason": "label-size-match",
+  "printerId": "prn_a1b2c3",
+  "printerName": "Traveler 3x5",
+  "message": "Routed to a printer loaded with 609×1015 dots, matching this template's design size."
+}
+```
+
+Branch on `reason`; show `message` to a person. `message` is written for humans and may be
+reworded.
 
 | `reason` | Meaning |
 |---|---|
 | `label-size-match` | Routed to a printer holding the template's design size |
 | `default` | The default printer — either it already fits, or nothing else holds the right stock |
-| `explicit` | You named a `printerId`, so no routing happened |
-| `pinned-label-size` | You pinned `labelSize`, so the printer's own stock wasn't consulted |
+| `explicit-printer` | You named a `printerId`, so no routing happened |
+| `explicit-label-size` | You sent `labelSize`, so the printer's own stock wasn't consulted and routing was skipped |
 
 Naming a printer or pinning a size is an explicit instruction and always wins. Routing is also
 skipped when the template carries a per-size override for the default printer's stock, since that
@@ -410,6 +423,12 @@ means the author laid it out for that size deliberately.
 If no configured printer holds the right stock you still get a print — on the default printer,
 scaled, with a `LABEL_SIZE_MISMATCH` warning. Refusing outright would be worse than printing
 something. Register each printer's real label stock in **Settings → Printers** for this to work.
+
+> [!TIP]
+> **Don't pin `labelSize` to force a size.** It disables routing *and* doesn't change which
+> printer the job goes to, so you can end up rendering 3×5 geometry onto a printer loaded with
+> 2×1 stock — a cropped label. That case now returns a `PRINTER_STOCK_MISMATCH` warning telling
+> you so. Omit `labelSize` and let the server route, or name the `printerId` you actually mean.
 
 **Flat payloads work too**, for services whose payload shape you can't change. Any top-level key
 that isn't one of the fields above is read as a variable:

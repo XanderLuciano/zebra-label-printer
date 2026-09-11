@@ -40,6 +40,7 @@ import type { JobLabelSize } from '../../db/print-job-repo'
 import type { RateLimiter } from '../rate-limit'
 import { rateLimitKey } from '../rate-limit'
 import { LOCAL_PRINTER_ID_PREFIX, LOCAL_PRINTER_NAME } from '../../constants'
+import type { PrinterSelectionReason } from '../../constants'
 
 type GetQueue = () => PrintQueue | null
 type GetRegistry = () => PrinterRegistry | null
@@ -49,16 +50,48 @@ interface PrintWarning {
   message: string
 }
 
-/** How the printer for this print was chosen, so a caller can see why. */
-type PrinterSelectionReason =
-  /** The request named a `printerId`. */
-  | 'explicit'
-  /** The request pinned `labelSize`, so the default printer's stock is irrelevant. */
-  | 'pinned-label-size'
-  /** Routed to a printer loaded with the stock this template was designed for. */
-  | 'label-size-match'
-  /** The default printer, either because it already fits or because nothing better exists. */
-  | 'default'
+/**
+ * Which printer this print went to, and why.
+ *
+ * `message` exists because `reason` alone wasn't enough: the first integrator to see
+ * `pinned-label-size` had to ask what it meant, and the answer — that their own request
+ * had suppressed automatic routing — was something the response could have just said.
+ * `printerName` is here so a UI has something to show a person.
+ */
+interface PrinterSelectionInfo {
+  reason: PrinterSelectionReason
+  printerId: string | null
+  printerName: string | null
+  message: string
+}
+
+/** Plain-language account of how the printer was chosen, and what to change. */
+export function describeSelection(
+  reason: PrinterSelectionReason,
+  tpl: Pick<LabelTemplate, 'baseWidthDots' | 'baseHeightDots'>,
+  size: JobLabelSize
+): string {
+  const design = `${tpl.baseWidthDots}×${tpl.baseHeightDots}`
+  const target = `${size.widthDots}×${size.heightDots}`
+
+  switch (reason) {
+    case 'explicit-printer':
+      return `Printed on the printer named in the request, at its configured ${target} dots. `
+        + 'Automatic routing was skipped because the request chose the printer.'
+    case 'explicit-label-size':
+      return `Printed at the ${target} dots given in the request. The printer's own configured `
+        + 'stock was not consulted and automatic routing was skipped. Omit labelSize to let the '
+        + `server pick a printer loaded with this template's ${design} design size.`
+    case 'label-size-match':
+      return `Routed to a printer loaded with ${target} dots, matching this template's design size.`
+    case 'default':
+      return design === target
+        ? `Used the default printer, which is loaded with this template's ${design} design size.`
+        : `Used the default printer at ${target} dots. No configured printer is loaded with this `
+          + `template's ${design} design size, so the layout was scaled to fit. Register each `
+          + "printer's real label stock in Settings to have prints routed automatically."
+  }
+}
 
 /**
  * A printer loaded with the stock this template was designed for, or null to leave
@@ -177,6 +210,45 @@ function checkVariables(
  * template with an override for the target size has been considered there, so it
  * stays quiet.
  */
+/**
+ * Warn when the geometry being rendered isn't the stock the target printer holds.
+ *
+ * Only reachable by pinning `labelSize`: without it the geometry *comes from* the
+ * printer's configuration, so the two agree by construction. Pinning is how the
+ * original cropped-label bug was worked around, and doing so silently reintroduces it
+ * from the other direction — rendering 609×1015 and sending it to a printer loaded with
+ * 406×203 crops the label just as badly, with nothing in the response to say so.
+ *
+ * Skipped for browser-owned printers, whose configuration lives in that browser and
+ * which the server therefore has nothing to compare against.
+ */
+export function printerStockWarnings(
+  registry: PrinterRegistry | null,
+  selection: PrinterSelection,
+  target: JobLabelSize
+): PrintWarning[] {
+  if (!registry || !selection.labelSize) return []
+  if (selection.printerId?.startsWith(LOCAL_PRINTER_ID_PREFIX) || selection.target === 'local') {
+    return []
+  }
+
+  const configured = registry.labelSizeFor(selection.printerId)
+  if (!configured || sameLabelSize(configured, target)) return []
+
+  const profile = selection.printerId
+    ? registry.profile(selection.printerId)
+    : registry.defaultProfile()
+
+  return [{
+    code: 'PRINTER_STOCK_MISMATCH',
+    message: `Rendering at the requested ${target.widthDots}×${target.heightDots} dots, but `
+      + `${profile?.name ?? 'the target printer'} is configured for `
+      + `${configured.widthDots}×${configured.heightDots}. The label will not fit the stock. `
+      + 'Drop labelSize to let the server route this to a printer loaded with the right size, '
+      + "or correct that printer's configured stock in Settings."
+  }]
+}
+
 function labelSizeWarnings(tpl: LabelTemplate, target: JobLabelSize): PrintWarning[] {
   const matchesBase = target.widthDots === tpl.baseWidthDots
     && target.heightDots === tpl.baseHeightDots
@@ -263,6 +335,34 @@ function templateRef(tpl: StoredTemplate | PresetTemplate) {
   return { id: tpl.id, shortName: tpl.shortName ?? null, name: tpl.name }
 }
 
+/**
+ * The printer this print resolves to, described for both machines and people.
+ *
+ * The id follows the same fallback the job record uses — the request's printer, else the
+ * default — so the response cannot name one printer while the job says another. The name
+ * comes from the registry, except for a browser-owned printer, which the server has no
+ * profile for and can only report as whatever the caller called it.
+ */
+function describePrinterChoice(
+  registry: PrinterRegistry | null,
+  selection: PrinterSelection,
+  reason: PrinterSelectionReason,
+  tpl: Pick<LabelTemplate, 'baseWidthDots' | 'baseHeightDots'>,
+  size: JobLabelSize
+): PrinterSelectionInfo {
+  const printerId = selection.printerId ?? registry?.defaultProfile()?.id ?? null
+  const isLocal = !!printerId?.startsWith(LOCAL_PRINTER_ID_PREFIX) || selection.target === 'local'
+
+  const printerName = isLocal
+    ? selection.printerName ?? LOCAL_PRINTER_NAME
+    : (printerId ? registry?.profile(printerId)?.name : null)
+      ?? registry?.defaultProfile()?.name
+      ?? selection.printerName
+      ?? null
+
+  return { reason, printerId, printerName, message: describeSelection(reason, tpl, size) }
+}
+
 /** What was serialized, without making the caller diff the values themselves. */
 function serializedSummary(variable: string, serials: string[]) {
   return {
@@ -283,7 +383,7 @@ interface SerializedPrintContext {
   serialVariable: string
   serials: string[]
   projectedSize: JobLabelSize
-  printerSelection: { reason: PrinterSelectionReason; printerId: string | null }
+  printerSelection: PrinterSelectionInfo
   warnings: PrintWarning[]
 }
 
@@ -427,8 +527,8 @@ export function templatePrintHandler(
     const registry = getRegistry()
     let selection = selectionOf(data)
     let printerReason: PrinterSelectionReason = data.printerId
-      ? 'explicit'
-      : data.labelSize ? 'pinned-label-size' : 'default'
+      ? 'explicit-printer'
+      : data.labelSize ? 'explicit-label-size' : 'default'
 
     // Auto-routing only when the caller expressed no preference at all. Naming a
     // printer or pinning a labelSize is an explicit instruction and outranks being
@@ -452,12 +552,10 @@ export function templatePrintHandler(
     const serialVariable = serializeVariable(data.serialize)
     const warnings = [
       ...labelSizeWarnings(tpl, projectedSize),
+      ...printerStockWarnings(registry, selection, projectedSize),
       ...serializeHints(tpl, data)
     ]
-    const printerSelection = {
-      reason: printerReason,
-      printerId: selection.printerId ?? registry?.defaultProfile()?.id ?? null
-    }
+    const printerSelection = describePrinterChoice(registry, selection, printerReason, tpl, projectedSize)
 
     // Distinct values to print, one label each. Without serialization that is a
     // single label printed `quantity` times via one ^PQ, which is cheaper and what

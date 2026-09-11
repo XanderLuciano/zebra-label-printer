@@ -124,6 +124,17 @@ Routing is also skipped when the template has a per-size override for the defaul
 because that means the author laid it out for that size on purpose. When nothing matches, the print
 still happens on the default with the warning — refusing would be worse than printing scaled.
 
+`printerSelection` reports the outcome as a `reason` code, a `printerName` for display, and a
+`message` in plain language. The message is not decoration: the first integrator to see the old
+`pinned-label-size` code had to ask what it meant, and the answer — that their own request had
+suppressed routing — was something the response could simply have said. The codes were renamed to
+`explicit-printer` / `explicit-label-size` at the same time, so the set reads as parallel.
+
+`PRINTER_STOCK_MISMATCH` closes the remaining hole. Pinning a `labelSize` was how the cropping bug
+got worked around, and pinning one that disagrees with the target printer's stock reintroduces it
+from the other side — rendering 609×1015 for a printer loaded with 406×203 crops just as badly.
+That case is only reachable via a pin, because otherwise the geometry comes *from* the printer.
+
 Readiness is deliberately not probed before routing. An unreachable but correctly-loaded printer
 queues the job and prints on the right stock when it returns, which beats printing immediately on
 the wrong stock; and probing would add a discovery round-trip to every print.
